@@ -1,0 +1,31 @@
+# Default configuration. Every path is resolved relative to the repo root
+# unless it is already absolute.
+
+paths:
+  data_dir: data
+  raw_dir: data/raw
+  cache_dir: data/cache
+  labels_dir: data/labels
+  tracknet_repo: external/TrackNetV3
+  tracknet_ckpt: external/TrackNetV3/ckpts/TrackNet_best.pt
+  inpaintnet_ckpt: external/TrackNetV3/ckpts/InpaintNet_best.pt
+
+# cuda | mps | cpu | auto
+# auto picks cuda, then mps, then cpu. Development is on macOS (mps/cpu);
+# production runs on an RTX 5070 (cuda). Nothing may hardcode a device.
+device: auto
+
+shuttle:
+  batch_size: 8
+  # nonoverlap: one pass, fast, lower accuracy.
+  # weight:     sliding window + weighted temporal ensemble (TrackNetV3 default).
+  eval_mode: weight
+  # Heatmap probability threshold used to binarise before blob localisation.
+  # This is TrackNetV3's own hardcoded 0.5; exposed here so it can be tuned.
+  heatmap_threshold: 0.5
+
+overlay:
+  # Number of past contacts of the trajectory to trail behind the current frame.
+  traj_len: 8
+  radius: 3
+  color: [0, 0, 255]   # BGR — red

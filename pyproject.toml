@@ -1,0 +1,39 @@
+[project]
+name = "badminton-analysis"
+version = "0.1.0"
+description = "Per-shot quality assessment from badminton match video"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.2",
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "opencv-python>=4.9",
+    "pillow>=10.0",
+    "tqdm>=4.66",
+    "parse>=1.20",          # required by the vendored TrackNetV3 code
+    "pyyaml>=6.0",
+    "pyarrow>=15.0",        # parquet, needed from phase 4 on
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "gdown>=5.1",           # fetching the TrackNetV3 checkpoints from Google Drive
+]
+
+[project.scripts]
+bda = "cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# Flat module layout under src/, matching the layout in the build plan:
+# `import shuttle`, not `import src.shuttle`.
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["cli", "config", "video", "shuttle"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
