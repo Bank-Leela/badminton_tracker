@@ -216,8 +216,19 @@ def _read_frames_resized(
     Full-resolution frames never accumulate: each is resized as it is decoded,
     on a thread pool, so memory is ~0.44 MB per frame regardless of source size.
     """
+    # Executor.map submits its whole input up front, which would hold every
+    # full-resolution frame of the chunk at once; feed it in small batches.
+    batch = 4 * RESIZE_WORKERS
+    small: list[np.ndarray] = []
+    pending: list[np.ndarray] = []
     with ThreadPoolExecutor(RESIZE_WORKERS) as pool:
-        small = list(pool.map(_resize_bgr_to_chw, (f for _, f in iter_frames(video_path, start_frame, end_frame))))
+        for _, frame in iter_frames(video_path, start_frame, end_frame):
+            pending.append(frame)
+            if len(pending) == batch:
+                small.extend(pool.map(_resize_bgr_to_chw, pending))
+                pending = []
+        if pending:
+            small.extend(pool.map(_resize_bgr_to_chw, pending))
     if not small:
         raise RuntimeError(f"no frames decoded from {video_path} at [{start_frame}, {end_frame})")
     return np.stack(small)

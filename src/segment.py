@@ -138,10 +138,15 @@ def frame_signatures(
     print(f"signatures: {len(rows)} frames in {elapsed:.1f}s ({len(rows) / elapsed:.0f} fps)")
 
     df = pd.DataFrame(rows, columns=SIGNATURE_COLUMNS)
+    if df.empty:
+        raise RuntimeError(f"no frames decoded from {video_path} at [{start_frame}, {end_frame})")
     if len(df) != end_frame - start_frame:
-        raise RuntimeError(
-            f"decoded {len(df)} frames but range is {end_frame - start_frame}; "
-            "the container's frame count is wrong, pass --end explicitly"
+        # Container frame counts overestimate by a few frames on some files.
+        # The rows tile what was actually decoded; downstream reads the range
+        # from them, not from the probe.
+        print(
+            f"signatures: decoded {len(df)} frames, container promised {end_frame - start_frame}; "
+            f"range ends at {int(df['frame'].iloc[-1]) + 1}"
         )
     return df
 
