@@ -3,6 +3,8 @@
     bda info    --video data/raw/match.mp4
     bda track   --video data/raw/match.mp4 --match-id msia_open_f --seconds 60
     bda overlay --video data/raw/match.mp4 --match-id msia_open_f
+    bda segment --video data/raw/match.mp4 --match-id msia_open_f --sheet
+    bda segment-eval --match-id msia_open_f --truth data/labels/msia_open_f.play.csv
 """
 
 from __future__ import annotations
@@ -107,6 +109,47 @@ def _write_overlay(cfg, args, df: pd.DataFrame, start: int, end: int | None) -> 
     print(f"overlay: wrote {out}")
 
 
+def cmd_segment(args) -> int:
+    from segment import segment_video, write_contact_sheet
+    from video import probe_video
+
+    cfg = load_config(args.config, args.overrides)
+    start, end = _resolve_range(args, Path(args.video))
+    segment_video(
+        cfg,
+        match_id=args.match_id,
+        video_path=args.video,
+        start_frame=start,
+        end_frame=end,
+        force=args.force,
+    )
+    if args.sheet:
+        out_dir = cache_dir(cfg, args.match_id)
+        camera = pd.read_csv(out_dir / "camera_segments.csv")
+        out = write_contact_sheet(args.video, camera, out_dir / "segments.png", probe_video(args.video).fps)
+        print(f"sheet: wrote {out}")
+    return 0
+
+
+def cmd_segment_eval(args) -> int:
+    """Precision/recall of play detection against a hand-marked truth file.
+
+    The truth CSV has columns `start_frame, end_frame` (end exclusive), one
+    row per span of play view.
+    """
+    from segment import play_precision_recall
+
+    cfg = load_config(args.config, args.overrides)
+    seg_file = cache_dir(cfg, args.match_id) / "segments.csv"
+    if not seg_file.exists():
+        raise SystemExit(f"no segments at {seg_file}; run `bda segment` first")
+    truth = pd.read_csv(args.truth)
+    spans = list(zip(truth["start_frame"].astype(int), truth["end_frame"].astype(int)))
+    precision, recall = play_precision_recall(pd.read_csv(seg_file), spans)
+    print(f"play-view detection: precision {precision:.1%}, recall {recall:.1%} (frame-level)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bda", description="badminton match analysis")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -133,6 +176,21 @@ def main(argv: list[str] | None = None) -> int:
     _add_range(p_overlay)
     _add_common(p_overlay)
     p_overlay.set_defaults(func=cmd_overlay)
+
+    p_seg = sub.add_parser("segment", help="camera cuts, play-view and rally segmentation")
+    p_seg.add_argument("--video", required=True)
+    p_seg.add_argument("--match-id", required=True)
+    p_seg.add_argument("--force", action="store_true", help="recompute even if cached")
+    p_seg.add_argument("--sheet", action="store_true", help="also write a per-segment contact sheet")
+    _add_range(p_seg)
+    _add_common(p_seg)
+    p_seg.set_defaults(func=cmd_segment)
+
+    p_eval = sub.add_parser("segment-eval", help="precision/recall of play detection vs a truth CSV")
+    p_eval.add_argument("--match-id", required=True)
+    p_eval.add_argument("--truth", required=True, help="CSV with start_frame,end_frame rows of play view")
+    _add_common(p_eval)
+    p_eval.set_defaults(func=cmd_segment_eval)
 
     args = parser.parse_args(argv)
     return args.func(args)

@@ -3,7 +3,9 @@
 Per-shot quality assessment from badminton match video. See
 `docs/badminton-analysis-plan.md` for the full build plan.
 
-**Status: phase 1 (scaffolding + TrackNet wrapper).**
+**Status: phase 1 built and unit-tested; its acceptance check (eyeball a
+60 s BWF clip) has not been run. Phase 2 (segmentation) is built and
+unit-tested on synthetic footage; its thresholds are untuned.**
 
 ## Setup
 
@@ -36,6 +38,8 @@ The PyPI `torch` wheel (2.14, cu130) already includes `sm_120`, so the RTX
 bda info  --video data/raw/match.mp4
 bda track --video data/raw/match.mp4 --match-id msia_open_f --seconds 60 --overlay
 bda overlay --video data/raw/match.mp4 --match-id msia_open_f   # re-render from cache
+bda segment --video data/raw/match.mp4 --match-id msia_open_f --sheet
+bda segment-eval --match-id msia_open_f --truth data/labels/msia_open_f.play.csv
 ```
 
 Outputs land in `data/cache/<match_id>/`:
@@ -45,6 +49,10 @@ Outputs land in `data/cache/<match_id>/`:
 | `shuttle.csv` | `frame, x, y, visible, confidence` in source-video pixels |
 | `shuttle.meta.json` | video path and frame range that produced it |
 | `overlay.mp4` | trajectory drawn onto the video, for eyeballing |
+| `frame_signatures.parquet` | per-frame `hist_diff, court_frac, line_frac` (the only decode pass phase 2 makes) |
+| `camera_segments.csv` | one row per hard cut, with the numbers the play-view heuristic saw |
+| `segments.csv` | `segment_id, start_frame, end_frame, is_play, rally_id` — tiles the range exactly once |
+| `segments.png` | contact sheet: one thumbnail per camera segment, green = play, red = not |
 
 Every stage caches and skips work when its output exists. `--force`
 recomputes.
@@ -87,6 +95,7 @@ src/config.py    config loading, path resolution, cache directories
 src/video.py     decode, frame iteration, clip extraction, overlay rendering
 src/cli.py       command line entry point
 src/shuttle.py   TrackNetV3 wrapper — the only module that imports external/
+src/segment.py   camera cuts, play-view heuristic, rally boundaries from the trajectory
 ```
 
 `src/` is a flat module layout (`import shuttle`, not `import src.shuttle`),
@@ -109,12 +118,39 @@ open data/cache/<id>/overlay.mp4
 Watch it. The shuttle should be tracked through most rallies. Note the failure
 modes; do not fix them yet.
 
+## Phase 2 acceptance check
+
+Not yet run: needs the same footage as phase 1. On a 10-minute chunk:
+
+```bash
+bda track   --video data/raw/<clip>.mp4 --match-id <id> --seconds 600
+bda segment --video data/raw/<clip>.mp4 --match-id <id> --seconds 600 --sheet
+```
+
+Open `data/cache/<id>/segments.png`. Every thumbnail carries the segment's
+`court_frac` and `line_frac`; if play views are red or replays are green,
+move `segment.min_court_frac` / `segment.min_line_frac` in the config (or
+`-o segment.min_court_frac=0.4`) and re-run — signatures are cached, so a
+re-run is instant. Then mark the true play spans by hand in a CSV with
+`start_frame,end_frame` rows and run `bda segment-eval`. Precision and recall
+should both be well above 90% before phase 3.
+
+Rally boundaries come from the cached `shuttle.csv`: a rally is a run of
+consistently visible shuttle longer than `segment.rally_min_s`. Without a
+trajectory in the cache, play segments are written whole with `rally_id = -1`.
+
+Known gap: a replay shot from the play camera is classed as play. Phase 5's
+shuttle-speed invariant should catch slow-motion; if not, this heuristic gets
+replaced by a classifier.
+
 ## Tests
 
 ```bash
 uv run pytest
 ```
 
-The tests build their own synthetic video, in which the marker's x position
-encodes the frame index — that is what catches seek and off-by-one errors.
-Tests that need the TrackNet checkpoint skip when it is absent.
+The tests build their own synthetic videos: one where a marker's x position
+encodes the frame index (catches seek and off-by-one errors), and a fake
+broadcast — play view, crowd, play view, with a three-frame flash — for the
+segmenter. Tests that need the TrackNet checkpoint or checkout skip when it
+is absent.
