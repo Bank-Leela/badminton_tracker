@@ -107,6 +107,48 @@ def iter_frames(
         cap.release()
 
 
+def sample_frames(path: str | Path, indices: Sequence[int]) -> list[np.ndarray]:
+    """Decode just the given absolute frame indices, in ascending order.
+
+    One capture, moved forward between samples: a short hop is grabbed
+    through, a long one is seeked (and verified, as in `_seek`). Cheap enough
+    to pull ~100 frames out of a full match without a second decode pass.
+    """
+    indices = list(indices)
+    if not indices:
+        return []
+    if any(b <= a for a, b in zip(indices, indices[1:])) or indices[0] < 0:
+        raise ValueError("indices must be strictly increasing and non-negative")
+
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        raise RuntimeError(f"cannot open video: {path}")
+    frames: list[np.ndarray] = []
+    try:
+        pos = 0  # index of the next frame cap.read() would return
+        for target in indices:
+            hop = target - pos
+            if hop >= SEEK_THRESHOLD:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, target)
+                if int(cap.get(cv2.CAP_PROP_POS_FRAMES)) == target:
+                    pos = target
+                    hop = 0
+                else:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
+            for _ in range(hop):
+                if not cap.grab():
+                    raise RuntimeError(f"video ended before frame {target}")
+                pos += 1
+            ok, frame = cap.read()
+            if not ok:
+                raise RuntimeError(f"video ended before frame {target}")
+            pos += 1
+            frames.append(frame)
+    finally:
+        cap.release()
+    return frames
+
+
 def read_frames(
     path: str | Path,
     start_frame: int = 0,

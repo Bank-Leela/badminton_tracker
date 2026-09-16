@@ -16,7 +16,13 @@ paths:
 device: auto
 
 shuttle:
+  # 8 peaks at ~3.8 GB on the GPU; 16 gives no speedup; 32 overflows a 12 GB
+  # card and crawls.
   batch_size: 8
+  # fp32: exact. fp16: autocast on CUDA, ~1.6x faster, heatmaps differ by
+  # <1e-3 — enough to flip an occasional borderline pixel across
+  # heatmap_threshold. Ignored on CPU/MPS.
+  precision: fp32
   # nonoverlap: one pass, fast, lower accuracy.
   # weight:     sliding window + weighted temporal ensemble (TrackNetV3 default).
   eval_mode: weight

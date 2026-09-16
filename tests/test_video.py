@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from video import extract_clip, iter_frames, probe_video, read_frames, write_overlay_video
+from video import extract_clip, iter_frames, probe_video, read_frames, sample_frames, write_overlay_video
 
 
 def dot_x(frame):
@@ -38,6 +38,18 @@ def test_iter_frames_to_end(synthetic_video):
 def test_empty_range_rejected(synthetic_video):
     with pytest.raises(ValueError):
         list(iter_frames(synthetic_video["path"], 10, 10))
+
+
+def test_sample_frames_returns_exactly_the_requested_frames(synthetic_video):
+    wanted = [0, 3, 4, 17, 40, 59]
+    frames = sample_frames(synthetic_video["path"], wanted)
+    assert [dot_x(f) for f in frames] == [20 + 4 * i for i in wanted]
+
+
+def test_sample_frames_rejects_unsorted(synthetic_video):
+    with pytest.raises(ValueError):
+        sample_frames(synthetic_video["path"], [5, 2])
+    assert sample_frames(synthetic_video["path"], []) == []
 
 
 def test_read_frames_shape(synthetic_video):

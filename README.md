@@ -14,9 +14,21 @@ uv pip install -e ".[dev]"
 # TrackNetV3 — frozen dependency, never edited, gitignored
 git clone https://github.com/qaz812345/TrackNetV3.git external/TrackNetV3
 uv run gdown 1CfzE87a0f6LhBp0kniSl1-89zaLCZ8cA -O /tmp/tnv3_ckpts.zip
-unzip -q /tmp/tnv3_ckpts.zip -d /tmp/tnv3_ckpts
+python -m zipfile -e /tmp/tnv3_ckpts.zip /tmp/tnv3_ckpts
+mkdir -p external/TrackNetV3/ckpts
 cp /tmp/tnv3_ckpts/ckpts/*.pt external/TrackNetV3/ckpts/
 ```
+
+**WSL note:** if the repo lives under `/mnt/c`, put the venv on the Linux
+filesystem and symlink it, or every `import torch` pays the 9p filesystem tax:
+
+```bash
+uv venv --python 3.12 ~/.venvs/badminton-analysis
+ln -sfn ~/.venvs/badminton-analysis .venv
+```
+
+The PyPI `torch` wheel (2.14, cu130) already includes `sm_120`, so the RTX
+5070 needs no special index.
 
 ## Use
 
@@ -49,9 +61,24 @@ bda track ... -o device=cpu -o shuttle.batch_size=4 -o shuttle.eval_mode=nonover
 development runs on Apple Silicon, production on an RTX 5070. TrackNet output
 on MPS matches CPU to ~1e-6.
 
-Measured throughput: **~16 fps on M-series MPS** in `weight` mode. `nonoverlap`
-is roughly 8x faster and less accurate. Frame rate does not depend on source
-resolution — every frame is resized to 512x288 for the model.
+Measured throughput in `weight` mode, 1080p source:
+
+| Device | `shuttle.precision` | steady-state inference | notes |
+|---|---|---|---|
+| RTX 5070 | `fp32` | ~74 fps | exact |
+| RTX 5070 | `fp16` | ~120 fps | heatmaps differ <1e-3; can flip a borderline pixel |
+| M-series MPS | `fp32` | ~16 fps | measured before the preprocessing rewrite |
+
+Plus a fixed ~4 s per `track` call for the background median. `nonoverlap` is
+roughly 8x faster and less accurate. Frame rate does not depend on source
+resolution — every frame is resized to 512x288 once, then stays on the device.
+`shuttle.batch_size` 8 is the sweet spot on 12 GB; 32 overflows and crawls.
+
+The wrapper does not use TrackNetV3's `Shuttlecock_Trajectory_Dataset` for
+inference: it resized every frame once per sliding window and ran at ~5 fps
+on the 5070. `tests/test_shuttle.py` asserts the wrapper's network inputs
+match that dataset's output to 1e-6, so this is a faithful reimplementation,
+not a change to the model.
 
 ## Layout
 
