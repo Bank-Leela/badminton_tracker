@@ -1,40 +1,51 @@
-"""Rally / camera-cut segmentation.
+"""Play-view and rally segmentation.
 
 Broadcast footage cuts between the play camera, replays, close-ups, crowd
 shots and graphics. Everything downstream must only see play. This module
-answers, for every frame in a range, "which camera segment is this, is it the
-play view, and which rally (if any) is in progress".
+answers, for every frame in a range, "is this the play view, and which rally
+(if any) is in progress".
 
-Three stages, each cached separately:
+"Play view" means the broadcast's main camera: the fixed high shot from behind
+one baseline. Live play that the director shows from another camera is
+deliberately *not* play — homography and court positions downstream are built
+for the one view, and a replay must never be counted as a new rally. Losing
+the occasional side-camera rally costs data; letting replays in corrupts it.
 
-1. `frame_signatures`: one cheap colour signature per frame, from a thumbnail.
-   The only stage that decodes video, so it dominates the cost (~decode
-   speed, a few hundred fps at 1080p).
-2. `detect_cuts` / `classify_segments`: hard cuts from the frame-to-frame
-   histogram distance; play view from court-colour coverage and white-line
-   coverage inside a central region of interest. Heuristic thresholds live in
-   `configs/default.yaml` under `segment:` and are expected to need tuning
-   against real footage — `bda segment --sheet` renders a contact sheet with
-   the per-segment numbers for exactly that.
-3. `split_rallies`: within play segments, a rally is a run of frames where the
+Three stages:
+
+1. `frame_line_masks`: one small white-pixel mask per frame. The only stage
+   that decodes video, so it dominates the cost (~200 fps at 1080p). Cached.
+2. `play_view_scores` / `play_spans`: the main camera does not move, so its
+   court lines land on the same pixels in every play-view frame. The line
+   template is learned from the range itself — pixels white in a large share
+   of frames — and each frame is scored by how well its white pixels match it.
+   No colours, no cut detection, nothing to tune per venue. On real broadcasts
+   the score is cleanly bimodal (play view >= 0.85, everything else < 0.4,
+   crossfades and wipes in between), so the threshold sits in an empty gap.
+3. `split_rallies`: within play spans, a rally is a run of frames where the
    shuttle trajectory (phase 1) is consistently visible. Between points the
    shuttle is in a hand or out of frame and TrackNet goes quiet.
 
 Output `segments.csv` has one row per contiguous span and covers the range
 exactly once: `segment_id, start_frame, end_frame, is_play, rally_id`.
-Non-play camera segments are one row each with `rally_id = -1`. Play
-segments are split into rally rows (`rally_id >= 0`, numbered across the
-whole range) and the dead time between them (`rally_id = -1`).
-`end_frame` is exclusive, as everywhere in this repo.
+Non-play spans are one row each with `rally_id = -1`. Play spans are split
+into rally rows (`rally_id >= 0`, numbered across the whole range) and the
+dead time between them (`rally_id = -1`). `end_frame` is exclusive, as
+everywhere in this repo.
 
-Known limitation: a replay shot from the play camera looks like play to the
-heuristic. Replays are usually slow motion, so phase 5's shuttle-speed
-invariant is the place that will catch them; if that is not enough, this is
-where a classifier replaces the heuristic.
+Assumptions, both true of the BWF broadcasts this was built on:
+- The main camera is static. A camera that pans or zooms would score low and
+  its frames would be dropped as not-play, never mislabelled as play. The run
+  summary reports how many frames scored near the threshold; a large share
+  means this assumption is breaking.
+- The play view is common in the range (its lines must be white in more than
+  `template_min_freq` of frames). True of match footage; a range that is
+  mostly intro or interval fails loudly instead of guessing.
 """
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Sequence
@@ -47,178 +58,187 @@ from config import Config, cache_dir
 from video import iter_frames, probe_video, sample_frames
 
 SEGMENT_COLUMNS = ["segment_id", "start_frame", "end_frame", "is_play", "rally_id"]
-SIGNATURE_COLUMNS = ["frame", "hist_diff", "court_frac", "line_frac"]
+VIEW_COLUMNS = ["segment_id", "start_frame", "end_frame", "is_play", "score"]
+SCORE_COLUMNS = ["frame", "recall", "precision", "score"]
+
+# Frames unpacked at once when scoring: 2048 masks at 320x180 is ~120 MB.
+_CHUNK = 2048
+# Pass 2 of the template: a line pixel is white in most play-view frames and
+# few others; an overlay (the score graphic) is white in most frames of both.
+_PLAY_MAJORITY = 0.5
+_OTHER_MINORITY = 0.3
+# Fewer template pixels than this share of the mask means no fixed play
+# camera was found. Real broadcasts give 1-3%.
+_MIN_TEMPLATE_FRAC = 0.002
+# Frames scoring within this distance of `play_score` are reported: on a
+# static camera they are only crossfades and wipes, well under 1%.
+_NEAR_THRESHOLD = 0.2
 
 
-# --- Stage 1: per-frame signatures --------------------------------------------
+# --- Stage 1: per-frame white-pixel masks --------------------------------------
 
 
-def _hsv_hist(hsv: np.ndarray, bins: Sequence[int]) -> np.ndarray:
-    """Normalised hue x saturation histogram, flattened. L1 norm is 1."""
-    hist = cv2.calcHist([hsv], [0, 1], None, list(bins), [0, 180, 0, 256]).ravel()
-    total = hist.sum()
-    return hist / total if total else hist
+def _mask_params(cfg_seg: Config) -> dict[str, int]:
+    return {
+        "mask_width": int(cfg_seg.get("mask_width", 320)),
+        "white_max_sat": int(cfg_seg.get("white_max_sat", 60)),
+        "white_min_val": int(cfg_seg.get("white_min_val", 170)),
+    }
 
 
-def _roi(hsv: np.ndarray, roi: Sequence[float]) -> np.ndarray:
-    h, w = hsv.shape[:2]
-    x0, y0, x1, y1 = roi
-    return hsv[int(y0 * h) : int(y1 * h), int(x0 * w) : int(x1 * w)]
-
-
-def _court_frac(hsv_roi: np.ndarray, hue_ranges: Sequence[Sequence[int]]) -> float:
-    """Fraction of ROI pixels whose hue is in one of the court-colour ranges."""
-    hue, sat, val = hsv_roi[..., 0], hsv_roi[..., 1], hsv_roi[..., 2]
-    coloured = (sat > 40) & (val > 40)
-    in_range = np.zeros(hue.shape, dtype=bool)
-    for lo, hi in hue_ranges:
-        in_range |= (hue >= lo) & (hue <= hi)
-    return float((coloured & in_range).mean())
-
-
-def _line_frac(hsv_roi: np.ndarray) -> float:
-    """Fraction of ROI pixels that are white-ish: bright and unsaturated."""
-    sat, val = hsv_roi[..., 1], hsv_roi[..., 2]
-    return float(((sat < 60) & (val > 180)).mean())
-
-
-def _thumb_hsv(frame_bgr: np.ndarray, width: int) -> np.ndarray:
+def white_mask(frame_bgr: np.ndarray, params: dict[str, int]) -> np.ndarray:
+    """Bright, unsaturated pixels of a downscaled frame: court lines, mostly."""
     h, w = frame_bgr.shape[:2]
-    if width >= w:
-        return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
-    thumb = cv2.resize(frame_bgr, (width, max(1, round(h * width / w))), interpolation=cv2.INTER_AREA)
-    return cv2.cvtColor(thumb, cv2.COLOR_BGR2HSV)
+    width = params["mask_width"]
+    small = cv2.resize(frame_bgr, (width, max(1, round(h * width / w))), interpolation=cv2.INTER_AREA)
+    hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+    return (hsv[..., 1] < params["white_max_sat"]) & (hsv[..., 2] > params["white_min_val"])
 
 
-def frame_signature(
-    frame_bgr: np.ndarray, cfg_seg: Config
-) -> tuple[np.ndarray, float, float]:
-    """`(histogram, court_frac, line_frac)` for one decoded frame.
-
-    Two thumbnails: a tiny one for the histogram (composition only), and a
-    wider one for the court features, because court lines are a few pixels
-    wide at 1080p and average away into the mat below ~600 px.
-    """
-    hsv_small = _thumb_hsv(frame_bgr, int(cfg_seg.get("thumb_width", 160)))
-    hsv_wide = _thumb_hsv(frame_bgr, int(cfg_seg.get("feature_width", 640)))
-    roi = _roi(hsv_wide, cfg_seg.get("court_roi", [0.1, 0.25, 0.9, 0.95]))
-    return (
-        _hsv_hist(hsv_small, cfg_seg.get("hist_bins", [16, 8])),
-        _court_frac(roi, cfg_seg.get("court_hue_ranges", [[35, 85], [90, 130]])),
-        _line_frac(roi),
-    )
-
-
-def frame_signatures(
+def frame_line_masks(
     video_path: str | Path,
     cfg: Config,
     start_frame: int = 0,
     end_frame: int | None = None,
-) -> pd.DataFrame:
-    """One row per frame: `frame, hist_diff, court_frac, line_frac`.
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """`(frames, packed_masks, width)` over the half-open range.
 
-    `hist_diff` is half the L1 distance between this frame's histogram and the
-    previous one's, in [0, 1]; it is 0 on the first frame of the range.
+    Masks are bit-packed along the last axis (`np.packbits`), so ten minutes
+    at 320x180 is ~130 MB in memory; `width` unpacks them.
     """
     info = probe_video(video_path)
     end_frame = info.frame_count if end_frame is None else end_frame
     if end_frame <= start_frame:
         raise ValueError(f"empty frame range [{start_frame}, {end_frame})")
-    cfg_seg = cfg.get("segment", Config({}))
+    params = _mask_params(cfg.get("segment", Config({})))
 
-    rows = []
-    prev_hist = None
+    frames, packed = [], []
     started = time.perf_counter()
     for idx, frame in iter_frames(video_path, start_frame, end_frame):
-        hist, court, line = frame_signature(frame, cfg_seg)
-        diff = 0.0 if prev_hist is None else 0.5 * float(np.abs(hist - prev_hist).sum())
-        rows.append((idx, diff, court, line))
-        prev_hist = hist
+        frames.append(idx)
+        packed.append(np.packbits(white_mask(frame, params), axis=-1))
     elapsed = time.perf_counter() - started
-    print(f"signatures: {len(rows)} frames in {elapsed:.1f}s ({len(rows) / elapsed:.0f} fps)")
-
-    df = pd.DataFrame(rows, columns=SIGNATURE_COLUMNS)
-    if df.empty:
+    if not frames:
         raise RuntimeError(f"no frames decoded from {video_path} at [{start_frame}, {end_frame})")
-    if len(df) != end_frame - start_frame:
+    print(f"masks: {len(frames)} frames in {elapsed:.1f}s ({len(frames) / elapsed:.0f} fps)")
+    if len(frames) != end_frame - start_frame:
         # Container frame counts overestimate by a few frames on some files.
-        # The rows tile what was actually decoded; downstream reads the range
-        # from them, not from the probe.
+        # Downstream reads the range from the decoded frames, not the probe.
         print(
-            f"signatures: decoded {len(df)} frames, container promised {end_frame - start_frame}; "
-            f"range ends at {int(df['frame'].iloc[-1]) + 1}"
+            f"masks: decoded {len(frames)} frames, container promised {end_frame - start_frame}; "
+            f"range ends at {frames[-1] + 1}"
         )
-    return df
+    return np.asarray(frames, dtype=np.int64), np.stack(packed), params["mask_width"]
 
 
-# --- Stage 2: cuts and play-view classification -------------------------------
+def _unpack(packed: np.ndarray, width: int) -> np.ndarray:
+    return np.unpackbits(packed, axis=-1, count=width).astype(bool)
 
 
-def detect_cuts(sig: pd.DataFrame, fps: float, cfg_seg: Config) -> list[tuple[int, int]]:
-    """Camera segments as `(start_frame, end_frame)` spans covering the range.
+# --- Stage 2: play-view scores and spans -----------------------------------------
 
-    A cut is a frame whose histogram distance to the previous frame exceeds
-    `cut_threshold`. Segments shorter than `min_segment_s` (a flash, a
-    two-frame transition) are merged into the segment before them.
+
+def _white_share(packed: np.ndarray, width: int, select: np.ndarray) -> np.ndarray:
+    """Per pixel: the share of the selected frames in which it is white."""
+    idx = np.flatnonzero(select)
+    total = np.zeros((packed.shape[1], width), dtype=np.int64)
+    for a in range(0, idx.size, _CHUNK):
+        total += _unpack(packed[idx[a : a + _CHUNK]], width).sum(axis=0)
+    return total / max(1, idx.size)
+
+
+def _match(packed: np.ndarray, width: int, template: np.ndarray, overlay: np.ndarray):
+    """Per frame: template recall, on-template precision, and their geometric mean.
+
+    Recall: share of template pixels white in the frame (within one pixel, to
+    absorb compression jitter). Precision: share of the frame's white pixels
+    that lie on the template. A close-up has neither; a crowd of white shirts
+    or the Hawk-Eye graphic can have recall but not precision.
     """
-    threshold = float(cfg_seg.get("cut_threshold", 0.35))
-    min_len = max(1, int(round(float(cfg_seg.get("min_segment_s", 0.5)) * fps)))
-
-    frames = sig["frame"].to_numpy()
-    first, last = int(frames[0]), int(frames[-1]) + 1
-    cut_frames = frames[sig["hist_diff"].to_numpy() > threshold]
-    # The first frame of the range can never be a cut: nothing precedes it.
-    cut_frames = [int(f) for f in cut_frames if f != first]
-
-    bounds = [first, *cut_frames, last]
-    spans = [(a, b) for a, b in zip(bounds, bounds[1:]) if b > a]
-
-    merged: list[tuple[int, int]] = []
-    for span in spans:
-        if merged and (span[1] - span[0]) < min_len:
-            merged[-1] = (merged[-1][0], span[1])
-        else:
-            merged.append(span)
-    # A short first segment has no predecessor; fold it into the next one.
-    if len(merged) > 1 and (merged[0][1] - merged[0][0]) < min_len:
-        merged[1] = (merged[0][0], merged[1][1])
-        merged.pop(0)
-    return merged
+    near = cv2.dilate(template.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+    n_template = max(1, int(template.sum()))
+    recall = np.empty(len(packed))
+    precision = np.empty(len(packed))
+    for a in range(0, len(packed), _CHUNK):
+        white = _unpack(packed[a : a + _CHUNK], width) & ~overlay
+        on = (white & near).sum(axis=(1, 2))
+        recall[a : a + _CHUNK] = np.minimum(on / n_template, 1.0)
+        precision[a : a + _CHUNK] = on / np.maximum(1, white.sum(axis=(1, 2)))
+    return recall, precision, np.sqrt(recall * precision)
 
 
-def classify_segments(
-    sig: pd.DataFrame, spans: Sequence[tuple[int, int]], cfg_seg: Config
-) -> pd.DataFrame:
-    """Per camera segment: median court/line coverage and the play-view verdict."""
-    min_court = float(cfg_seg.get("min_court_frac", 0.25))
-    min_line = float(cfg_seg.get("min_line_frac", 0.005))
-    by_frame = sig.set_index("frame")
-    rows = []
-    for seg_id, (a, b) in enumerate(spans):
-        part = by_frame.loc[a : b - 1]
-        court = float(part["court_frac"].median())
-        line = float(part["line_frac"].median())
-        rows.append((seg_id, a, b, court, line, int(court >= min_court and line >= min_line)))
-    return pd.DataFrame(rows, columns=["segment_id", "start_frame", "end_frame", "court_frac", "line_frac", "is_play"])
+def play_view_scores(
+    frames: np.ndarray, packed: np.ndarray, width: int, cfg_seg: Config
+) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+    """`(scores, template, overlay)`: per-frame match to the learned line template.
 
-
-def merge_same_verdict(camera: pd.DataFrame) -> pd.DataFrame:
-    """Merge runs of consecutive camera segments with the same `is_play` verdict.
-
-    A one-frame flash or a two-frame transition splits the play camera into
-    two segments; left as they are, a rally crossing that boundary would be
-    split too. Two consecutive play segments are, for everything downstream,
-    one span of play. `segment_id` is renumbered; the pre-merge rows stay in
-    `camera_segments.csv` for the contact sheet.
+    Pass 1: template = pixels white in more than `template_min_freq` of all
+    frames. Persistent overlays such as the score graphic get in too, which
+    inflates every frame's score, so pass 1 only seeds: frames scoring at least
+    `seed_score` are taken as play view.
+    Pass 2: overlay = pixels white in most non-seed frames as well; template =
+    pixels white in most seed frames and few others. Final scores use these.
     """
+    min_freq = float(cfg_seg.get("template_min_freq", 0.25))
+    seed_score = float(cfg_seg.get("seed_score", 0.75))
+
+    everything = np.ones(len(packed), dtype=bool)
+    no_overlay = np.zeros((packed.shape[1], width), dtype=bool)
+    _, _, first = _match(packed, width, _white_share(packed, width, everything) > min_freq, no_overlay)
+    seed = first >= seed_score
+    if not seed.any():
+        raise RuntimeError(
+            f"no frame in [{frames[0]}, {frames[-1] + 1}) matches a dominant line layout; "
+            "is there play view in this range?"
+        )
+
+    in_play = _white_share(packed, width, seed)
+    elsewhere = _white_share(packed, width, ~seed)
+    overlay = elsewhere > _PLAY_MAJORITY
+    template = (in_play > _PLAY_MAJORITY) & (elsewhere < _OTHER_MINORITY)
+    if template.mean() < _MIN_TEMPLATE_FRAC:
+        raise RuntimeError(
+            f"line template has {int(template.sum())} pixels ({template.mean():.2%} of the mask); "
+            "no fixed play camera found in this range"
+        )
+
+    recall, precision, score = _match(packed, width, template, overlay)
+    scores = pd.DataFrame({"frame": frames, "recall": recall, "precision": precision, "score": score})
+    return scores, template, overlay
+
+
+def play_spans(scores: pd.DataFrame, fps: float, cfg_seg: Config) -> pd.DataFrame:
+    """Contiguous play / not-play spans tiling the range, from per-frame scores.
+
+    A frame is play view when its score is at least `play_score`; the verdict
+    is then a majority vote over `play_smooth_s`, which absorbs a flash or a
+    few frames of a wipe. `score` in the output is the span's median score.
+    """
+    threshold = float(cfg_seg.get("play_score", 0.6))
+    k = max(1, int(round(float(cfg_seg.get("play_smooth_s", 0.5)) * fps))) | 1  # odd window
+
+    raw = (scores["score"].to_numpy() >= threshold).astype(np.float64)
+    vote = np.convolve(np.pad(raw, k // 2, mode="edge"), np.ones(k) / k, mode="valid") > 0.5
+
+    frames = scores["frame"].to_numpy()
+    change = np.flatnonzero(vote[1:] != vote[:-1]) + 1
+    bounds = [0, *change.tolist(), len(vote)]
     rows = []
-    for seg in camera.itertuples():
-        if rows and rows[-1][3] == int(seg.is_play):
-            prev = rows[-1]
-            rows[-1] = (prev[0], prev[1], int(seg.end_frame), prev[3])
-        else:
-            rows.append((len(rows), int(seg.start_frame), int(seg.end_frame), int(seg.is_play)))
-    return pd.DataFrame(rows, columns=["segment_id", "start_frame", "end_frame", "is_play"])
+    for seg_id, (a, b) in enumerate(zip(bounds, bounds[1:])):
+        median = float(np.median(scores["score"].to_numpy()[a:b]))
+        rows.append((seg_id, int(frames[a]), int(frames[b - 1]) + 1, int(vote[a]), median))
+    return pd.DataFrame(rows, columns=VIEW_COLUMNS)
+
+
+def write_template_image(template: np.ndarray, overlay: np.ndarray, out_path: str | Path, scale: int = 3) -> Path:
+    """White = learned court lines, red = overlay pixels excluded. For eyeballing."""
+    vis = np.zeros(template.shape + (3,), dtype=np.uint8)
+    vis[template] = (255, 255, 255)
+    vis[overlay] = (0, 0, 255)
+    h, w = template.shape
+    out_path = Path(out_path)
+    cv2.imwrite(str(out_path), cv2.resize(vis, (w * scale, h * scale), interpolation=cv2.INTER_NEAREST))
+    return out_path
 
 
 # --- Stage 3: rallies from the shuttle trajectory ------------------------------
@@ -303,6 +323,27 @@ def _assert_segments_sane(df: pd.DataFrame) -> None:
 # --- Driver -------------------------------------------------------------------
 
 
+def _load_masks(mask_file: Path, start_frame: int, end_frame: int, params: dict[str, int]):
+    """Cached masks restricted to the range, or SystemExit if they cannot serve it."""
+    with np.load(mask_file) as z:
+        built_with = {key: int(z[key]) for key in params}
+        lo, hi = int(z["range_start"]), int(z["range_end"])
+        frames, packed = z["frames"], z["packed"]
+    if built_with != params:
+        raise SystemExit(f"{mask_file} was built with {built_with}, config says {params}; pass --force")
+    if lo > start_frame or hi < end_frame:
+        raise SystemExit(f"{mask_file} covers frames [{lo}, {hi}), not [{start_frame}, {end_frame}); pass --force")
+    keep = (frames >= start_frame) & (frames < end_frame)
+    return frames[keep], packed[keep]
+
+
+def _file_stamp(path: Path) -> list[int] | None:
+    if not path.exists():
+        return None
+    st = path.stat()
+    return [st.st_size, st.st_mtime_ns]
+
+
 def segment_video(
     cfg: Config,
     match_id: str,
@@ -313,55 +354,74 @@ def segment_video(
 ) -> pd.DataFrame:
     """Run all three stages with the caching rule; write `segments.csv`.
 
+    Only the decode is expensive, and its masks are cached in
+    `line_masks.npz`. `segments.csv` is reused only while the range, the
+    `segment:` config and `shuttle.csv` are unchanged (recorded in
+    `segments.meta.json`); otherwise stages 2-3 rerun from the cached masks,
+    which takes seconds. `force` also redoes the decode.
+
     Uses the cached shuttle trajectory for rally boundaries when present;
-    otherwise every play segment is one row with `rally_id = -1` and a
-    warning is printed.
+    otherwise every play span is one row with `rally_id = -1` and a warning is
+    printed.
     """
     out_dir = cache_dir(cfg, match_id)
     out_file = out_dir / "segments.csv"
-    if out_file.exists() and not force:
-        print(f"segments: reusing {out_file} (pass --force to recompute)")
-        return pd.read_csv(out_file)
+    meta_file = out_dir / "segments.meta.json"
+    shuttle_file = out_dir / "shuttle.csv"
 
     info = probe_video(video_path)
     end_frame = info.frame_count if end_frame is None else end_frame
     cfg_seg = cfg.get("segment", Config({}))
+    key = {
+        "range": [start_frame, end_frame],
+        "segment": cfg_seg.to_dict(),
+        "shuttle": _file_stamp(shuttle_file),
+    }
+    if out_file.exists() and meta_file.exists() and not force:
+        if json.loads(meta_file.read_text()) == key:
+            print(f"segments: reusing {out_file} (pass --force to recompute)")
+            return pd.read_csv(out_file)
 
-    sig_file = out_dir / "frame_signatures.parquet"
-    if sig_file.exists() and not force:
-        sig = pd.read_parquet(sig_file)
-        covered = sig["frame"].min() <= start_frame and sig["frame"].max() >= end_frame - 1
-        if not covered:
-            raise SystemExit(
-                f"{sig_file} covers frames {sig['frame'].min()}-{sig['frame'].max()}, "
-                f"not [{start_frame}, {end_frame}); pass --force"
-            )
-        sig = sig[(sig["frame"] >= start_frame) & (sig["frame"] < end_frame)]
-        print(f"signatures: reusing {sig_file}")
+    params = _mask_params(cfg_seg)
+    mask_file = out_dir / "line_masks.npz"
+    if mask_file.exists() and not force:
+        frames, packed = _load_masks(mask_file, start_frame, end_frame, params)
+        print(f"masks: reusing {mask_file}")
     else:
-        sig = frame_signatures(video_path, cfg, start_frame, end_frame)
-        sig.to_parquet(sig_file, index=False)
+        frames, packed, _ = frame_line_masks(video_path, cfg, start_frame, end_frame)
+        np.savez_compressed(
+            mask_file, frames=frames, packed=packed, range_start=start_frame, range_end=end_frame, **params
+        )
+    width = params["mask_width"]
 
-    spans = detect_cuts(sig, info.fps, cfg_seg)
-    camera = classify_segments(sig, spans, cfg_seg)
-    camera.to_csv(out_dir / "camera_segments.csv", index=False)
+    scores, template, overlay = play_view_scores(frames, packed, width, cfg_seg)
+    scores.to_parquet(out_dir / "view_scores.parquet", index=False)
+    write_template_image(template, overlay, out_dir / "line_template.png")
+    views = play_spans(scores, info.fps, cfg_seg)
+    views.to_csv(out_dir / "view_segments.csv", index=False)
 
-    shuttle_file = out_dir / "shuttle.csv"
     shuttle = None
     if shuttle_file.exists():
         shuttle = pd.read_csv(shuttle_file)
     else:
         print(f"segments: no {shuttle_file}; rally boundaries skipped (run `bda track` first)")
 
-    merged = merge_same_verdict(camera)
-    df = split_rallies(merged, shuttle, info.fps, cfg_seg)
+    df = split_rallies(views, shuttle, info.fps, cfg_seg)
     df.to_csv(out_file, index=False)
-    n_play = int(merged["is_play"].sum())
+    meta_file.write_text(json.dumps(key))
+
+    threshold = float(cfg_seg.get("play_score", 0.6))
+    near = float((scores["score"] - threshold).abs().lt(_NEAR_THRESHOLD).mean())
+    n_play = int(views["is_play"].sum())
+    play_frac = float((views["end_frame"] - views["start_frame"])[views["is_play"] == 1].sum()) / len(scores)
     n_rally = int((df["rally_id"] >= 0).sum())
     print(
-        f"segments: wrote {out_file} — {len(camera)} camera segments merged to "
-        f"{len(merged)} ({n_play} play), {n_rally} rallies"
+        f"segments: wrote {out_file} — {n_play} play spans ({play_frac:.0%} of frames), {n_rally} rallies; "
+        f"{near:.1%} of frames scored within {_NEAR_THRESHOLD} of play_score "
+        f"(template {int(template.sum())} px)"
     )
+    if near > 0.02:
+        print("segments: WARNING many frames near the threshold — does the play camera pan or zoom?")
     return df
 
 
@@ -370,18 +430,19 @@ def segment_video(
 
 def write_contact_sheet(
     video_path: str | Path,
-    camera: pd.DataFrame,
+    views: pd.DataFrame,
     out_path: str | Path,
     fps: float,
     thumb_width: int = 320,
     columns: int = 5,
 ) -> Path:
-    """One thumbnail per camera segment, annotated with the numbers the heuristic used.
+    """One thumbnail per play / not-play span, annotated with its median score.
 
-    The frame shown is the segment's midpoint. Green border = classified play,
-    red = not. This is how the `segment:` thresholds get tuned.
+    The frame shown is the span's midpoint. Green border = play view, red =
+    not. A not-play span may hold several shots (close-up, replay, crowd);
+    only one of them is shown.
     """
-    mids = [int((a + b) // 2) for a, b in zip(camera["start_frame"], camera["end_frame"])]
+    mids = [int((a + b) // 2) for a, b in zip(views["start_frame"], views["end_frame"])]
     frames = sample_frames(video_path, mids)
     if not frames:
         raise RuntimeError("no segments to draw")
@@ -391,7 +452,7 @@ def write_contact_sheet(
     rows = (len(frames) + columns - 1) // columns
     sheet = np.full((rows * (th + text_h), columns * tw, 3), 20, dtype=np.uint8)
 
-    for i, (frame, seg) in enumerate(zip(frames, camera.itertuples())):
+    for i, (frame, seg) in enumerate(zip(frames, views.itertuples())):
         thumb = cv2.resize(frame, (tw, th), interpolation=cv2.INTER_AREA)
         colour = (0, 200, 0) if seg.is_play else (0, 0, 220)
         cv2.rectangle(thumb, (0, 0), (tw - 1, th - 1), colour, 3)
@@ -401,7 +462,7 @@ def write_contact_sheet(
         secs = (seg.end_frame - seg.start_frame) / fps
         lines = [
             f"#{seg.segment_id} f{seg.start_frame}-{seg.end_frame} {secs:.1f}s",
-            f"court {seg.court_frac:.2f} line {seg.line_frac:.3f}",
+            f"score {seg.score:.2f}",
         ]
         for j, text in enumerate(lines):
             cv2.putText(sheet, text, (x + 4, y + th + 18 + 20 * j), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)

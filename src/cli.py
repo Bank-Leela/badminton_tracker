@@ -125,8 +125,8 @@ def cmd_segment(args) -> int:
     )
     if args.sheet:
         out_dir = cache_dir(cfg, args.match_id)
-        camera = pd.read_csv(out_dir / "camera_segments.csv")
-        out = write_contact_sheet(args.video, camera, out_dir / "segments.png", probe_video(args.video).fps)
+        views = pd.read_csv(out_dir / "view_segments.csv")
+        out = write_contact_sheet(args.video, views, out_dir / "segments.png", probe_video(args.video).fps)
         print(f"sheet: wrote {out}")
     return 0
 
@@ -177,11 +177,11 @@ def main(argv: list[str] | None = None) -> int:
     _add_common(p_overlay)
     p_overlay.set_defaults(func=cmd_overlay)
 
-    p_seg = sub.add_parser("segment", help="camera cuts, play-view and rally segmentation")
+    p_seg = sub.add_parser("segment", help="play-view and rally segmentation")
     p_seg.add_argument("--video", required=True)
     p_seg.add_argument("--match-id", required=True)
     p_seg.add_argument("--force", action="store_true", help="recompute even if cached")
-    p_seg.add_argument("--sheet", action="store_true", help="also write a per-segment contact sheet")
+    p_seg.add_argument("--sheet", action="store_true", help="also write a per-span contact sheet")
     _add_range(p_seg)
     _add_common(p_seg)
     p_seg.set_defaults(func=cmd_segment)

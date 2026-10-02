@@ -3,9 +3,11 @@
 Per-shot quality assessment from badminton match video. See
 `docs/badminton-analysis-plan.md` for the full build plan.
 
-**Status: phase 1 built and unit-tested; its acceptance check (eyeball a
-60 s BWF clip) has not been run. Phase 2 (segmentation) is built and
-unit-tested on synthetic footage; its thresholds are untuned.**
+**Status: phase 1 built and unit-tested; run on a 60 s BWF clip, overlay not
+yet signed off. Phase 2 (segmentation) rebuilt around a court-line template
+after the colour heuristic failed on real footage; checked by eye on two
+broadcasts, hand-marked precision/recall not yet run. Progress notes:
+`docs/progress.md`.**
 
 ## Setup
 
@@ -49,13 +51,19 @@ Outputs land in `data/cache/<match_id>/`:
 | `shuttle.csv` | `frame, x, y, visible, confidence` in source-video pixels |
 | `shuttle.meta.json` | video path and frame range that produced it |
 | `overlay.mp4` | trajectory drawn onto the video, for eyeballing |
-| `frame_signatures.parquet` | per-frame `hist_diff, court_frac, line_frac` (the only decode pass phase 2 makes) |
-| `camera_segments.csv` | one row per hard cut, with the numbers the play-view heuristic saw |
+| `line_masks.npz` | per-frame white-pixel masks at 320 px, bit-packed (the only decode pass phase 2 makes; ~6 MB per 10 min) |
+| `view_scores.parquet` | per-frame `recall, precision, score` against the learned court-line template |
+| `line_template.png` | the learned template: white = court lines, red = overlay pixels (score graphic) excluded |
+| `view_segments.csv` | play / not-play spans with their median score, before rally splitting |
 | `segments.csv` | `segment_id, start_frame, end_frame, is_play, rally_id` — tiles the range exactly once |
-| `segments.png` | contact sheet: one thumbnail per camera segment, green = play, red = not |
+| `segments.meta.json` | range, `segment:` config and `shuttle.csv` stamp that produced `segments.csv` |
+| `segments.png` | contact sheet: one thumbnail per span, green = play, red = not |
 
 Every stage caches and skips work when its output exists. `--force`
-recomputes.
+recomputes. Exceptions to "exists means reuse": `segments.csv` is redone
+(from the cached masks, in seconds) whenever the range, the `segment:` config
+or `shuttle.csv` changes; and the shuttle cache is keyed by match id alone, so
+a different `--start/--seconds` needs a new `--match-id` or `--force`.
 
 ## Config
 
@@ -95,7 +103,7 @@ src/config.py    config loading, path resolution, cache directories
 src/video.py     decode, frame iteration, clip extraction, overlay rendering
 src/cli.py       command line entry point
 src/shuttle.py   TrackNetV3 wrapper — the only module that imports external/
-src/segment.py   camera cuts, play-view heuristic, rally boundaries from the trajectory
+src/segment.py   play view by court-line template, rally boundaries from the trajectory
 ```
 
 `src/` is a flat module layout (`import shuttle`, not `import src.shuttle`),
@@ -118,30 +126,56 @@ open data/cache/<id>/overlay.mp4
 Watch it. The shuttle should be tracked through most rallies. Note the failure
 modes; do not fix them yet.
 
+## Phase 2 — what counts as play
+
+Play view is the broadcast's **main camera only**: the fixed high shot from
+behind one baseline. Live play the director shows from another camera is
+deliberately dropped — downstream homography and court positions are built
+for one view, and a replay must never be counted as a new rally.
+
+The main camera does not move, so its court lines land on the same pixels in
+every play-view frame. `bda segment` learns that line layout from the range
+itself (pixels white in a large share of frames, minus overlays such as the
+score graphic, which are white in nearly every frame) and scores each frame
+by how well its white pixels match it. No colours, no cut detection, nothing
+per-venue to tune. On both test broadcasts the score is cleanly bimodal —
+play view 0.85–1.0, everything else below 0.4, crossfades and wipes the only
+frames in between — so `segment.play_score` sits in an empty gap.
+
+The colour heuristic this replaced (court-hue coverage per histogram-cut
+segment) called 85% of real footage play against a true ~40%: it missed
+crossfade cuts, read blue shirts as blue court, and passed replays from the
+overhead and side cameras. See `docs/progress.md`.
+
 ## Phase 2 acceptance check
 
-Not yet run: needs the same footage as phase 1. On a 10-minute chunk:
+On a 10-minute chunk — a new match id, so the phase 1 trajectory is not
+reused:
 
 ```bash
-bda track   --video data/raw/<clip>.mp4 --match-id <id> --seconds 600
-bda segment --video data/raw/<clip>.mp4 --match-id <id> --seconds 600 --sheet
+bda track   --video data/raw/<clip>.mp4 --match-id <id>_10m --start <first play frame> --seconds 600
+bda segment --video data/raw/<clip>.mp4 --match-id <id>_10m --start <first play frame> --seconds 600 --sheet
 ```
 
-Open `data/cache/<id>/segments.png`. Every thumbnail carries the segment's
-`court_frac` and `line_frac`; if play views are red or replays are green,
-move `segment.min_court_frac` / `segment.min_line_frac` in the config (or
-`-o segment.min_court_frac=0.4`) and re-run — signatures are cached, so a
-re-run is instant. Then mark the true play spans by hand in a CSV with
-`start_frame,end_frame` rows and run `bda segment-eval`. Precision and recall
-should both be well above 90% before phase 3.
+Open `data/cache/<id>_10m/segments.png` (green = play) and
+`line_template.png` (should be the court lines and nothing else). The run
+prints the share of frames that scored near `play_score`: well under 1% on a
+static camera. A large share means the play camera pans or zooms, which this
+method does not handle — those frames are dropped, not mislabelled.
+
+Then mark the true play spans by hand in a CSV with `start_frame,end_frame`
+rows and run `bda segment-eval`. Precision and recall should both be well
+above 90% before phase 3.
 
 Rally boundaries come from the cached `shuttle.csv`: a rally is a run of
 consistently visible shuttle longer than `segment.rally_min_s`. Without a
-trajectory in the cache, play segments are written whole with `rally_id = -1`.
+trajectory in the cache, play spans are written whole with `rally_id = -1`.
 
-Known gap: a replay shot from the play camera is classed as play. Phase 5's
-shuttle-speed invariant should catch slow-motion; if not, this heuristic gets
-replaced by a classifier.
+Known gaps: a replay shot *from the main camera* would match the template and
+be classed as play (none seen in either test broadcast; phase 5's
+shuttle-speed invariant should catch slow motion). A range that is mostly
+intro or interval has no dominant line layout, and `bda segment` stops with an
+error rather than guess.
 
 ## Tests
 

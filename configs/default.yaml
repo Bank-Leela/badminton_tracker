@@ -37,25 +37,23 @@ overlay:
   color: [0, 0, 255]   # BGR — red
 
 segment:
-  # Per-frame colour signature. Small on purpose: cuts and view
-  # classification need composition, not detail.
-  thumb_width: 160
-  hist_bins: [16, 8]          # hue, saturation
-  # Court-colour and white-line coverage are measured on a wider thumbnail:
-  # lines are a few pixels wide at 1080p and vanish below ~600 px.
-  feature_width: 640
-  # Hard cut when the frame-to-frame histogram distance (0..1) exceeds this.
-  cut_threshold: 0.35
-  # Camera segments shorter than this merge into their predecessor.
-  min_segment_s: 0.5
-  # Play-view heuristic. ROI is [x0, y0, x1, y1] as fractions of the frame;
-  # the court sits in the lower-middle of a broadcast play view.
-  court_roi: [0.10, 0.25, 0.90, 0.95]
-  # OpenCV hue (0-180). BWF mats: green ~35-85, blue ~90-130.
-  court_hue_ranges: [[35, 85], [90, 130]]
-  # UNTUNED — set from the contact sheet (`bda segment --sheet`) on real footage.
-  min_court_frac: 0.25
-  min_line_frac: 0.005
+  # Play view = the static main camera, found by matching each frame's white
+  # pixels to the court-line layout most common in the range. Changing any
+  # mask_* / white_* key needs `--force` (the masks are cached); the rest
+  # rerun in seconds.
+  mask_width: 320             # lines are 1-2 px here; 160 loses the far ones
+  white_max_sat: 60           # HSV saturation (0-255): lines are unsaturated...
+  white_min_val: 170          # ...and bright
+  # Pass 1 template: pixels white in more than this share of frames.
+  template_min_freq: 0.25
+  # Pass 1 frames scoring at least this seed pass 2. Pass 1 scores are
+  # inflated by the score graphic, so this sits above play_score.
+  seed_score: 0.75
+  # Play view when the final score (0..1) is at least this. On both test
+  # broadcasts nothing scored between 0.40 and 0.85 except crossfades.
+  play_score: 0.6
+  # Majority vote over this window absorbs flashes and wipe frames.
+  play_smooth_s: 0.5
   # Rally boundaries from shuttle visibility inside play segments.
   rally_smooth_s: 1.0         # box filter on the visible flag
   rally_min_s: 1.5            # drop shorter runs (a toss, a false detection)
