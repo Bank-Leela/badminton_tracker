@@ -9,7 +9,8 @@ Last updated 2026-10-01. Picks up from `badminton-analysis-plan.md`.
 | 1 — TrackNet wrapper | yes | 60 s run done; **waiting on me to watch the overlay** |
 | 2 — Segmentation | **rebuilt** 2026-10-01 (line template) | checked by eye on both videos; **hand-marked P/R not done** |
 
-Changes are **not committed yet**.
+Committed on branch `phase2-line-template` (not merged into `main`, not
+pushed).
 
 ## Decided 2026-10-01
 
@@ -26,7 +27,8 @@ Changes are **not committed yet**.
    `data/labels/<match id>.play.csv` (`start_frame,end_frame`) and run
    `bda segment-eval`. Claude's eye check found every boundary right, but
    that is not an independent hand-marked truth.
-3. **Commit** the phase 2 rebuild.
+3. **Merge** `phase2-line-template` into `main` once happy
+   (`git switch main` then `git merge --ff-only phase2-line-template`).
 4. Then phase 3 (court homography). Note the template already finds the
    main camera's court lines — a head start for line detection.
 
