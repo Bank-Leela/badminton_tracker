@@ -36,6 +36,7 @@ outer edges of 40 mm lines: a 2 cm ambiguity, a tenth of the tolerance.
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import time
@@ -526,11 +527,15 @@ def draw_court(bgr: np.ndarray, H: np.ndarray, label: str | None = None) -> np.n
 # --- Driver ----------------------------------------------------------------------------
 
 
-def _file_stamp(path: Path) -> list[int] | None:
-    if not path.exists():
-        return None
-    st = path.stat()
-    return [st.st_size, st.st_mtime_ns]
+def _views_digest(views_file: Path) -> str:
+    """Fingerprint of the play spans and their ids — what `homography.json` is keyed on.
+
+    Content, not size/mtime: `bda segment` rewrites view_segments.csv whenever
+    its settings change, usually with identical spans.
+    """
+    views = pd.read_csv(views_file)
+    play = views.loc[views["is_play"] == 1, ["segment_id", "start_frame", "end_frame"]].to_numpy(dtype=np.int64)
+    return hashlib.sha1(play.tobytes()).hexdigest()
 
 
 def _span_background(video_path, a: int, b: int, n: int) -> np.ndarray:
@@ -556,7 +561,7 @@ def solve_homographies(
         raise SystemExit(f"no {views_file}; run `bda segment` first")
     out_file = out_dir / "homography.json"
     cfg_court = cfg.get("court", Config({}))
-    inputs = {"view_segments": _file_stamp(views_file), "court": cfg_court.to_dict()}
+    inputs = {"play_digest": _views_digest(views_file), "court": cfg_court.to_dict()}
     if out_file.exists() and not force:
         cached = json.loads(out_file.read_text())
         if cached.get("inputs") == inputs:
@@ -695,7 +700,7 @@ def apply_manual_corners(
         info = probe_video(video_path)
         doc = {"match_id": match_id, "video": str(video_path), "image_size": [info.width, info.height],
                "court": "metres; origin at court centre; x right as seen from the main camera, y away from it",
-               "inputs": {"view_segments": _file_stamp(out_dir / "view_segments.csv"), "court": cfg_court.to_dict()},
+               "inputs": {"play_digest": _views_digest(out_dir / "view_segments.csv"), "court": cfg_court.to_dict()},
                "segments": [{"segment_id": int(s.segment_id), "start_frame": int(s.start_frame),
                              "end_frame": int(s.end_frame), "image_to_court": None, "source": "needs_manual"}
                             for s in views[views["is_play"] == 1].itertuples()]}

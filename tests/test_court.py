@@ -177,10 +177,12 @@ def test_solve_homographies_end_to_end(match_cache, H_true, monkeypatch):
     corner_px = project(H_true, CORNERS[:1])
     assert project(rows.H.iloc[0], corner_px)[0] == pytest.approx(CORNERS[0], abs=0.05)
 
-    # Cached: a rerun returns the file without fitting.
+    # Cached: a rerun returns the file without fitting — also after the play
+    # spans file is rewritten with the same spans.
     import court
 
     monkeypatch.setattr(court, "solve_background", lambda *a, **k: (_ for _ in ()).throw(AssertionError("refit")))
+    pd.read_csv(out / "view_segments.csv").assign(score=0.5).to_csv(out / "view_segments.csv", index=False)
     again = solve_homographies(cfg, "synthetic", video)
     assert again["segments"] == json.loads((out / "homography.json").read_text())["segments"]
 
