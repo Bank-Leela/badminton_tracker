@@ -38,9 +38,10 @@ Assumptions, both true of the BWF broadcasts this was built on:
   its frames would be dropped as not-play, never mislabelled as play. The run
   summary reports how many frames scored near the threshold; a large share
   means this assumption is breaking.
-- The play view is common in the range (its lines must be white in more than
-  `template_min_freq` of frames). True of match footage; a range that is
-  mostly intro or interval fails loudly instead of guessing.
+- The play view is the largest group of frames sharing a fixed layout of
+  white pixels (`_dominant_layout`), and at least 3% of the range. True of
+  match footage; a range that is mostly intro or interval fails loudly
+  instead of guessing.
 """
 
 from __future__ import annotations
@@ -71,8 +72,18 @@ _OTHER_MINORITY = 0.3
 # camera was found. Real broadcasts give 1-3%.
 _MIN_TEMPLATE_FRAC = 0.002
 # Frames scoring within this distance of `play_score` are reported: on a
-# static camera they are only crossfades and wipes, well under 1%.
-_NEAR_THRESHOLD = 0.2
+# static camera they are only crossfades and wipes, well under 1%. Narrow on
+# purpose: the play-view mode sits anywhere from ~0.75 (score graphic on
+# screen, All England 2019) to ~0.95, the rest below ~0.4.
+_NEAR_THRESHOLD = 0.1
+# Part of the segments.csv cache key: bump when stages 2-3 change what they
+# compute, so cached results are redone (from the cached masks, in seconds).
+# 3: pass-1 template from the dominant shared layout, not pixel frequency.
+# 4: play threshold per match (valley of the score histogram); play spans
+#    shorter than play_min_s dropped.
+# 5: only the main cluster of play kept (another match in the stream).
+# 6: rallies bridge short cuts away from the main camera (one id, several rows).
+_METHOD = 6
 
 
 # --- Stage 1: per-frame white-pixel masks --------------------------------------
@@ -167,24 +178,58 @@ def _match(packed: np.ndarray, width: int, template: np.ndarray, overlay: np.nda
     return recall, precision, np.sqrt(recall * precision)
 
 
+def _dominant_layout(
+    packed: np.ndarray, width: int, n_sample: int = 2000, pool: int = 4, min_group: float = 0.03
+) -> np.ndarray:
+    """Pixels white in most frames of the group that shares the largest fixed layout.
+
+    Why not just "pixels white in many frames": a persistent graphic can be
+    white in more frames than faint court lines are. On All England 2019 the
+    score bug is white in 54% of frames and the lines in 15-25%, so a
+    frequency template was mostly score bug and matched dark close-ups best.
+
+    Instead, on `n_sample` evenly spaced frames (masks OR-pooled `pool` x
+    `pool` to absorb jitter): each frame's group is the frames whose pooled
+    mask overlaps it with IoU >= 0.5; the group's layout is the cells white in
+    at least half of it. Close-ups showing only the score bug form a large
+    group with a tiny layout; crowd shots form no group; the play view forms a
+    large group with a large layout (lines, boards, the bug). The group
+    maximising size x layout, ignoring groups under `min_group` of the sample,
+    gives the template at full mask resolution.
+    """
+    idx = np.unique(np.linspace(0, len(packed) - 1, min(n_sample, len(packed))).astype(int))
+    full = _unpack(packed[idx], width)
+    h, w = full.shape[1] // pool * pool, full.shape[2] // pool * pool
+    pooled = full[:, :h, :w].reshape(len(idx), h // pool, pool, w // pool, pool).any(axis=(2, 4))
+    pooled = pooled.reshape(len(idx), -1).astype(np.float32)
+
+    area = pooled.sum(axis=1)
+    inter = pooled @ pooled.T
+    union = area[:, None] + area[None, :] - inter
+    group = (inter >= 0.5 * np.maximum(union, 1)) & (area[:, None] > 0)
+    size = group.sum(axis=1)
+    layout = ((group.astype(np.float32) @ pooled) >= 0.5 * np.maximum(size, 1)[:, None]).sum(axis=1)
+    value = np.where(size >= max(2, min_group * len(idx)), size * layout, 0)
+    best = int(np.argmax(value))
+    if value[best] == 0:
+        raise RuntimeError("no group of frames shares a fixed layout; is there play view in this range?")
+    return full[group[best]].mean(axis=0) > _PLAY_MAJORITY
+
+
 def play_view_scores(
     frames: np.ndarray, packed: np.ndarray, width: int, cfg_seg: Config
 ) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
     """`(scores, template, overlay)`: per-frame match to the learned line template.
 
-    Pass 1: template = pixels white in more than `template_min_freq` of all
-    frames. Persistent overlays such as the score graphic get in too, which
-    inflates every frame's score, so pass 1 only seeds: frames scoring at least
-    `seed_score` are taken as play view.
+    Pass 1: `_dominant_layout` finds the group of frames sharing the largest
+    fixed layout of white pixels; its consensus is the pass-1 template.
+    Frames scoring at least `seed_score` against it are taken as play view.
     Pass 2: overlay = pixels white in most non-seed frames as well; template =
     pixels white in most seed frames and few others. Final scores use these.
     """
-    min_freq = float(cfg_seg.get("template_min_freq", 0.25))
     seed_score = float(cfg_seg.get("seed_score", 0.75))
-
-    everything = np.ones(len(packed), dtype=bool)
     no_overlay = np.zeros((packed.shape[1], width), dtype=bool)
-    _, _, first = _match(packed, width, _white_share(packed, width, everything) > min_freq, no_overlay)
+    _, _, first = _match(packed, width, _dominant_layout(packed, width), no_overlay)
     seed = first >= seed_score
     if not seed.any():
         raise RuntimeError(
@@ -207,18 +252,56 @@ def play_view_scores(
     return scores, template, overlay
 
 
+def play_threshold(score: np.ndarray, cfg_seg: Config) -> float:
+    """`play_score` from the config, or with `auto` the valley between the score modes.
+
+    Scores are bimodal — play view high, everything else low — but where the
+    modes sit varies by broadcast: play view at 0.65-0.85 with the rest under
+    0.40 (2018-19, score graphic on screen during play), play at 0.75-0.90
+    with a tail of non-play up to 0.55 (All England 2026). No fixed value sits
+    mid-gap in both. `auto`: histogram in 40 bins, 3-bin smoothing, the lowest
+    point between 0.3 and 0.8; when the valley is flat, the middle of the run
+    of bins within 1.5x (+1) of that lowest count.
+    """
+    setting = cfg_seg.get("play_score", "auto")
+    if setting != "auto":
+        return float(setting)
+    hist, edges = np.histogram(score, bins=40, range=(0.0, 1.0))
+    smooth = np.convolve(hist, np.ones(3) / 3, mode="same")
+    centres = (edges[:-1] + edges[1:]) / 2
+    lo, hi = int(np.searchsorted(centres, 0.3)), int(np.searchsorted(centres, 0.8))
+    window = smooth[lo:hi]
+    i = int(np.argmin(window))
+    low = window <= window[i] * 1.5 + 1
+    a = b = i
+    while a > 0 and low[a - 1]:
+        a -= 1
+    while b < len(window) - 1 and low[b + 1]:
+        b += 1
+    return float((centres[lo + a] + centres[lo + b]) / 2)
+
+
 def play_spans(scores: pd.DataFrame, fps: float, cfg_seg: Config) -> pd.DataFrame:
     """Contiguous play / not-play spans tiling the range, from per-frame scores.
 
-    A frame is play view when its score is at least `play_score`; the verdict
-    is then a majority vote over `play_smooth_s`, which absorbs a flash or a
-    few frames of a wipe. `score` in the output is the span's median score.
+    A frame is play view when its score is at least `play_threshold`; the
+    verdict is then a majority vote over `play_smooth_s`, which absorbs a flash
+    or a few frames of a wipe, and play runs shorter than `play_min_s` are
+    dropped — on All England 2026 those were 0.2-1.7 s glimpses of close-ups
+    scoring just over the line, and no rally fits in one anyway. `score` in
+    the output is the span's median score; the threshold used is in
+    `.attrs["play_score"]`.
     """
-    threshold = float(cfg_seg.get("play_score", 0.6))
+    threshold = play_threshold(scores["score"].to_numpy(), cfg_seg)
     k = max(1, int(round(float(cfg_seg.get("play_smooth_s", 0.5)) * fps))) | 1  # odd window
+    min_len = int(round(float(cfg_seg.get("play_min_s", 2.0)) * fps))
 
     raw = (scores["score"].to_numpy() >= threshold).astype(np.float64)
     vote = np.convolve(np.pad(raw, k // 2, mode="edge"), np.ones(k) / k, mode="valid") > 0.5
+    for a, b in _runs(vote):
+        if b - a < min_len:
+            vote[a:b] = False
+    vote, dropped = _keep_main_match(vote, fps, cfg_seg)
 
     frames = scores["frame"].to_numpy()
     change = np.flatnonzero(vote[1:] != vote[:-1]) + 1
@@ -227,7 +310,41 @@ def play_spans(scores: pd.DataFrame, fps: float, cfg_seg: Config) -> pd.DataFram
     for seg_id, (a, b) in enumerate(zip(bounds, bounds[1:])):
         median = float(np.median(scores["score"].to_numpy()[a:b]))
         rows.append((seg_id, int(frames[a]), int(frames[b - 1]) + 1, int(vote[a]), median))
-    return pd.DataFrame(rows, columns=VIEW_COLUMNS)
+    views = pd.DataFrame(rows, columns=VIEW_COLUMNS)
+    views.attrs["play_score"] = threshold
+    views.attrs["dropped"] = [(int(frames[a]), int(frames[b - 1]) + 1) for a, b in dropped]
+    return views
+
+
+def _keep_main_match(vote: np.ndarray, fps: float, cfg_seg: Config) -> tuple[np.ndarray, list[tuple[int, int]]]:
+    """Keep only the cluster of play that is the match; return it and the dropped spans.
+
+    A stream can open or close on another match on the same court — India
+    Open 2023 starts with the end of the men's doubles final, shot by the same
+    main camera, so it passes as play view. Within a match, play view never
+    pauses longer than an interval or a challenge (at most 4.7 min across 32
+    matches); between matches there are ceremonies and walk-ons. Play runs
+    separated by more than `match_gap_min` form clusters; the one with the most
+    play is kept.
+    """
+    gap = int(round(float(cfg_seg.get("match_gap_min", 6.0)) * 60 * fps))
+    runs = _runs(vote)
+    if len(runs) < 2:
+        return vote, []
+    clusters = [[runs[0]]]
+    for run in runs[1:]:
+        if run[0] - clusters[-1][-1][1] > gap:
+            clusters.append([run])
+        else:
+            clusters[-1].append(run)
+    if len(clusters) == 1:
+        return vote, []
+    main = max(clusters, key=lambda c: sum(b - a for a, b in c))
+    vote = vote.copy()
+    dropped = [run for c in clusters if c is not main for run in c]
+    for a, b in dropped:
+        vote[a:b] = False
+    return vote, dropped
 
 
 def write_template_image(template: np.ndarray, overlay: np.ndarray, out_path: str | Path, scale: int = 3) -> Path:
@@ -305,8 +422,34 @@ def split_rallies(
         if cursor < b:
             rows.append((seg.segment_id, cursor, b, 1, -1))
     df = pd.DataFrame(rows, columns=SEGMENT_COLUMNS)
+    if by_frame is not None:
+        df = _bridge_rallies(df, fps, cfg_seg)
     _assert_segments_sane(df)
     return df
+
+
+def _bridge_rallies(df: pd.DataFrame, fps: float, cfg_seg: Config) -> pd.DataFrame:
+    """Give one rally id to rally pieces split by a short cut away from the main camera.
+
+    2018-19 broadcasts cut to a side camera for ~1 s in the middle of a rally
+    and back; each main-camera piece became its own rally (All England 2019:
+    170 rallies for 104 points). Between points the main camera is away for
+    10 s or more. So rally rows less than `rally_max_gap_s` apart keep the
+    same id: a rally may span several play segments, with the off-camera
+    seconds between them as non-play rows (`rally_id = -1`, no tracking).
+    Within one play segment this changes nothing — `rally_spans` already
+    bridged those gaps.
+    """
+    max_gap = float(cfg_seg.get("rally_max_gap_s", 2.0)) * fps
+    ids = df["rally_id"].to_numpy().copy()
+    current, prev_end = -1, None
+    for i in np.flatnonzero(ids >= 0):
+        start = df["start_frame"].iat[i]
+        if prev_end is None or start - prev_end > max_gap:
+            current += 1
+        ids[i] = current
+        prev_end = df["end_frame"].iat[i]
+    return df.assign(rally_id=ids)
 
 
 def _assert_segments_sane(df: pd.DataFrame) -> None:
@@ -317,7 +460,10 @@ def _assert_segments_sane(df: pd.DataFrame) -> None:
     assert df["segment_id"].is_monotonic_increasing, "segments out of order"
     rallies = df[df["rally_id"] >= 0]
     assert (rallies["is_play"] == 1).all(), "rally outside a play segment"
-    assert rallies["rally_id"].tolist() == list(range(len(rallies))), "rally ids must be 0..n-1 in order"
+    # One rally may span several rows (pieces either side of a short cut).
+    ids = rallies["rally_id"].to_numpy()
+    assert (np.diff(ids) >= 0).all() and (np.diff(ids) <= 1).all() and (len(ids) == 0 or ids[0] == 0), \
+        "rally ids must run 0..n-1 in order"
 
 
 # --- Driver -------------------------------------------------------------------
@@ -373,6 +519,7 @@ def segment_video(
     end_frame = info.frame_count if end_frame is None else end_frame
     cfg_seg = cfg.get("segment", Config({}))
     key = {
+        "method": _METHOD,
         "range": [start_frame, end_frame],
         "segment": cfg_seg.to_dict(),
         "shuttle": _file_stamp(shuttle_file),
@@ -410,18 +557,21 @@ def segment_video(
     df.to_csv(out_file, index=False)
     meta_file.write_text(json.dumps(key))
 
-    threshold = float(cfg_seg.get("play_score", 0.6))
+    threshold = views.attrs["play_score"]
     near = float((scores["score"] - threshold).abs().lt(_NEAR_THRESHOLD).mean())
     n_play = int(views["is_play"].sum())
     play_frac = float((views["end_frame"] - views["start_frame"])[views["is_play"] == 1].sum()) / len(scores)
-    n_rally = int((df["rally_id"] >= 0).sum())
+    n_rally = int(df.loc[df["rally_id"] >= 0, "rally_id"].nunique())
     print(
         f"segments: wrote {out_file} — {n_play} play spans ({play_frac:.0%} of frames), {n_rally} rallies; "
-        f"{near:.1%} of frames scored within {_NEAR_THRESHOLD} of play_score "
+        f"{near:.1%} of frames scored within {_NEAR_THRESHOLD} of play_score {threshold:.2f} "
         f"(template {int(template.sum())} px)"
     )
     if near > 0.02:
         print("segments: WARNING many frames near the threshold — does the play camera pan or zoom?")
+    for a, b in views.attrs["dropped"]:
+        print(f"segments: dropped play view at f{a}-{b} ({(b - a) / info.fps:.0f} s): separate from the "
+              f"main match by more than match_gap_min — another match in the stream?")
     return df
 
 

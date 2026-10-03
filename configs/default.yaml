@@ -44,20 +44,33 @@ segment:
   mask_width: 320             # lines are 1-2 px here; 160 loses the far ones
   white_max_sat: 60           # HSV saturation (0-255): lines are unsaturated...
   white_min_val: 170          # ...and bright
-  # Pass 1 template: pixels white in more than this share of frames.
-  template_min_freq: 0.25
-  # Pass 1 frames scoring at least this seed pass 2. Pass 1 scores are
-  # inflated by the score graphic, so this sits above play_score.
+  # Pass 1 frames scoring at least this against the dominant shared layout
+  # seed pass 2. Pass 1 scores are inflated by the score graphic, so this
+  # sits above play_score.
   seed_score: 0.75
-  # Play view when the final score (0..1) is at least this. On both test
-  # broadcasts nothing scored between 0.40 and 0.85 except crossfades.
-  play_score: 0.6
+  # Play view when the final score (0..1) is at least this. `auto`: the
+  # valley between the two score modes, per match — the gap moves by
+  # broadcast (0.40-0.65 in 2018-19, 0.55-0.75 at All England 2026), so no
+  # fixed value sits mid-gap everywhere. A number overrides it.
+  play_score: auto
   # Majority vote over this window absorbs flashes and wipe frames.
   play_smooth_s: 0.5
+  # Play spans shorter than this are dropped: glimpses of close-ups scoring
+  # just over the line; no rally fits in one.
+  play_min_s: 2.0
+  # Play separated from the rest by a longer gap than this is another match
+  # in the stream (India Open 2023 opens on the doubles final); only the
+  # cluster with the most play is kept. Within a match the longest gap seen
+  # across 32 matches is 4.7 min.
+  match_gap_min: 6.0
   # Rally boundaries from shuttle visibility inside play segments.
   rally_smooth_s: 1.0         # box filter on the visible flag
   rally_min_s: 1.5            # drop shorter runs (a toss, a false detection)
-  rally_max_gap_s: 2.0        # bridge shorter gaps (shuttle lost at a clear's apex)
+  # Bridge shorter gaps (shuttle lost at a clear's apex or out of frame).
+  # 4 s: within play spans, gaps of 2.0-3.2 s were lost shuttles splitting one
+  # rally (Arctic Open 2025: 127 rallies for 106 points at 2 s, ~109 at 4 s);
+  # a real between-point pause is longer.
+  rally_max_gap_s: 4.0
 
 court:
   # Pixel sizes are at 1080p and scale with the source height.

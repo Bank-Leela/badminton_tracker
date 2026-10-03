@@ -12,6 +12,7 @@ from segment import (
     frame_line_masks,
     play_precision_recall,
     play_spans,
+    play_threshold,
     play_view_scores,
     rally_spans,
     segment_video,
@@ -74,11 +75,80 @@ def test_template_excludes_the_score_graphic(scored, broadcast_video):
     assert template.sum() > 300  # the court lines are there
 
 
+def test_play_view_scores_survive_a_dominant_score_graphic():
+    """All England 2019: the score graphic is white in more frames than the
+    play view, whose lines are faint (each line pixel white in ~70% of play
+    frames), and there are many dark close-ups showing only the graphic."""
+    rng = np.random.default_rng(0)
+    h, w = 180, 320
+    lines = np.zeros((h, w), bool)
+    lines[60, 60:260] = lines[170, 30:290] = True       # baselines
+    lines[60:171, 160] = True                            # centre line
+    for y in range(60, 171):                             # sidelines, in perspective
+        lines[y, int(60 - (y - 60) * 30 / 110)] = lines[y, int(259 + (y - 60) * 30 / 110)] = True
+    bug = np.zeros((h, w), bool)
+    bug[10:20, 20:60] = True
+    kinds = ["play"] * 250 + ["dark"] * 400 + ["crowd"] * 350
+    masks = np.zeros((len(kinds), h, w), bool)
+    for i, kind in enumerate(kinds):
+        if kind == "play":
+            masks[i] = lines & (rng.random((h, w)) < 0.7)
+        elif kind == "crowd":
+            masks[i] = rng.random((h, w)) < 0.05
+        if kind != "play" or i % 2:                      # the graphic: always off play, half the time on it
+            masks[i] |= bug
+    scores, template, _ = play_view_scores(np.arange(len(kinds)), np.packbits(masks, axis=-1), w, CFG_SEG)
+    play = np.array([k == "play" for k in kinds])
+    s = scores["score"].to_numpy()
+    assert s[play].min() > play_threshold(s, CFG_SEG) > s[~play].max()
+    assert not (template & bug).any()
+
+
+@pytest.mark.parametrize(
+    "play_mode, other_tail, lo, hi",
+    [
+        ((0.70, 0.85), (0.00, 0.40), 0.40, 0.70),  # 2018-19: score graphic on screen, play scores lower
+        ((0.75, 0.95), (0.00, 0.55), 0.55, 0.75),  # All England 2026: non-play tail reaches 0.55
+        ((0.85, 1.00), (0.00, 0.35), 0.35, 0.85),  # 2026 Worlds / China Masters
+    ],
+)
+def test_play_threshold_finds_the_valley(play_mode, other_tail, lo, hi):
+    rng = np.random.default_rng(1)
+    score = np.r_[rng.uniform(*other_tail, 7000), rng.uniform(*play_mode, 3000), rng.uniform(lo, hi, 15)]
+    t = play_threshold(score, CFG_SEG)
+    assert lo < t < hi
+    assert play_threshold(score, Config({"play_score": 0.42})) == 0.42  # a number overrides auto
+
+
+def test_play_spans_keep_only_the_main_match():
+    """A stream opening on the end of the previous match, same court and camera."""
+    fps = 30.0
+    minute = int(60 * fps)
+    score = np.full(30 * minute, 0.05)
+    score[: minute] = 0.95                                 # previous match, 1 min of play
+    for start in range(9 * minute, 29 * minute, 2 * minute):
+        score[start : start + minute] = 0.95               # the match: play with 1-min gaps
+    score[20 * minute : 24 * minute] = 0.05                # a 4-min break inside it stays
+    scores = pd.DataFrame({"frame": np.arange(len(score)), "score": score})
+    views = play_spans(scores, fps, CFG_SEG)
+    play = views[views.is_play == 1]
+    assert play.start_frame.min() == 9 * minute
+    assert views.attrs["dropped"] == [(0, minute)]
+    assert (play.start_frame >= 24 * minute).any()        # play after the 4-min break kept
+
+
+def test_play_spans_drop_glimpses_shorter_than_play_min_s():
+    score = np.r_[np.full(300, 0.05), np.full(30, 0.95), np.full(300, 0.05), np.full(120, 0.95)]
+    scores = pd.DataFrame({"frame": np.arange(len(score)), "score": score})
+    views = play_spans(scores, 30.0, CFG_SEG)  # 1 s glimpse, then a 4 s span
+    assert list(zip(views.start_frame, views.end_frame, views.is_play)) == [(0, 630, 0), (630, 750, 1)]
+
+
 def test_play_view_scores_fail_without_a_fixed_camera():
     rng = np.random.default_rng(0)
     noise = rng.random((60, 180, 320)) > 0.97
     packed = np.packbits(noise, axis=-1)
-    with pytest.raises(RuntimeError, match="dominant line layout|no fixed play camera"):
+    with pytest.raises(RuntimeError, match="shares a fixed layout|dominant line layout|no fixed play camera"):
         play_view_scores(np.arange(60), packed, 320, CFG_SEG)
 
 
@@ -137,6 +207,30 @@ def test_split_rallies_tiles_the_range_and_numbers_rallies():
     assert (row.start_frame, row.end_frame, row.rally_id) == (300, 400, -1)
 
 
+def test_rallies_bridge_a_short_cut_away_from_the_main_camera():
+    """2018-19 broadcasts cut to a side camera for ~1 s mid-rally; between
+    points the main camera is away for 10 s or more."""
+    fps = 25.0
+    cfg = Config({"rally_smooth_s": 0.2, "rally_min_s": 1.0, "rally_max_gap_s": 4.0})
+    s = lambda sec: int(sec * fps)  # noqa: E731
+    segments = pd.DataFrame({
+        "segment_id": [0, 1, 2, 3, 4],
+        "start_frame": [0, s(8), s(9), s(30), s(42)],
+        "end_frame": [s(8), s(9), s(30), s(42), s(60)],
+        "is_play": [1, 0, 1, 0, 1],
+    })
+    visible = np.zeros(s(60), dtype=int)
+    visible[s(2):s(8)] = 1     # rally A, main camera ...
+    visible[s(9):s(16)] = 1    # ... a 1 s side-camera cut, rally A continues
+    visible[s(22):s(29)] = 1   # rally B, same play span, after a 6 s pause
+    visible[s(43):s(55)] = 1   # rally C, after a 12 s cut-away
+    shuttle = pd.DataFrame({"frame": range(s(60)), "visible": visible})
+    df = split_rallies(segments, shuttle, fps, cfg)
+    rallies = df[df.rally_id >= 0]
+    assert rallies["rally_id"].tolist() == [0, 0, 1, 2]
+    assert rallies["segment_id"].tolist() == [0, 2, 2, 4]
+
+
 def test_split_rallies_without_shuttle_keeps_segments_whole():
     segments = pd.DataFrame({"segment_id": [0, 1], "start_frame": [0, 90], "end_frame": [90, 150], "is_play": [1, 0]})
     df = split_rallies(segments, None, 30.0, CFG_SEG)
@@ -185,7 +279,9 @@ def test_segment_video_end_to_end(broadcast_video, tmp_path, monkeypatch):
         out_dir / "shuttle.csv", index=False
     )
     df = segment_video(cfg, "synthetic", broadcast_video["path"])
-    assert df.loc[df.rally_id >= 0, "rally_id"].tolist() == [0, 1]
+    # The two pieces are 3 s apart across a 2 s crowd cut — under
+    # rally_max_gap_s (4 s), so they are one rally spanning both play spans.
+    assert df.loc[df.rally_id >= 0, "rally_id"].tolist() == [0, 0]
     assert df.loc[df.rally_id >= 0, "segment_id"].tolist() == [0, 2]
 
     # Cached: a second call returns the same rows.
