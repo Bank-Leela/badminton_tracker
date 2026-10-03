@@ -1,18 +1,202 @@
 # Progress
 
-Last updated 2026-10-01. Picks up from `badminton-analysis-plan.md`.
+Last updated 2026-10-03 evening. Picks up from `badminton-analysis-plan.md`.
 
 ## Where things stand
 
 | Phase | Built | Acceptance check |
 |---|---|---|
-| 1 — TrackNet wrapper | yes | 60 s run done; **waiting on me to watch the overlay** |
-| 2 — Segmentation | **rebuilt** 2026-10-01 (line template) | checked by eye on both videos; **hand-marked P/R not done** |
-| 3 — Court homography | yes, 2026-10-01 | fitted on both videos, length/width checks pass; **waiting on me to look at the overlays** |
+| 1 — TrackNet wrapper | yes; play-only tracking added | **all 32 matches tracked**; 30 fps and 25 fps 60 s overlays **waiting on me to watch** |
+| 2 — Segmentation | rebuilt 2026-10-01; hardened on 32 matches | rallies match real point totals (below); **hand-marked P/R not done** |
+| 3 — Court homography | yes (branch `phase3-court`) | **all 32 pass** the length/width check; overlays **waiting on me to look** |
 
-Phase 2 is committed, merged into `main` and pushed. Phase 3 is **not
-committed yet**. Phase 3 was started before phases 1-2 were signed off — my
-call, noted here so the sign-offs don't get lost.
+Phase 2 is on `main` (pushed). Phase 3 + footage docs are committed on local
+branch `phase3-court` (not merged, not pushed). **Everything since the night
+of 2026-10-02 is uncommitted** — see "Overnight" below.
+
+## Phases 1-3 on all 32 matches (finished 2026-10-03)
+
+| match | fps | min | play % | thr | spans | court (m) | H | detected % | rallies | points | ratio |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| km_ae2019_f_axelsen | 25 | 111 | 20 | 0.53 | 185 | 13.40 x 6.10 | 185/185 | 82 | 89 | 104 | **86%** |
+| km_chn2019_f_ginting | 25 | 110 | 25 | 0.68 | 122 | 13.40 x 6.10 | 122/122 | 82 | 118 | 118 | 100% |
+| km_den2018_f_chou | 25 | 101 | 31 | 0.49 | 121 | 13.39 x 6.10 | 121/121 | 66 | 114 | 115 | 99% |
+| km_den2019_f_chenlong | 25 | 65 | 26 | 0.65 | 69 | 13.40 x 6.10 | 69/69 | 64 | 63 | 68 | 93% |
+| km_inam2019_f_antonsen | 25 | 97 | 22 | 0.66 | 106 | 13.40 x 6.10 | 106/106 | 76 | 104 | 109 | 95% |
+| km_jpn2018_qf_lindan | 25 | 55 | 31 | 0.61 | 70 | 13.41 x 6.10 | 70/70 | 76 | 63 | 60 | 105% |
+| km_jpn2019_f_christie | 25 | 74 | 24 | 0.59 | 73 | 13.40 x 6.10 | 73/73 | 73 | 72 | 71 | 101% |
+| km_mas2018_f_leechongwei | 25 | 89 | 31 | 0.46 | 84 | 13.40 x 6.10 | 84/84 | 76 | 83 | 82 | 101% |
+| km_mym2020_f_axelsen | 25 | 76 | 30 | 0.55 | 78 | 13.39 x 6.10 | 78/78 | 73 | 78 | 78 | 100% |
+| km_sgp2019_f_ginting | 25 | 93 | 18 | 0.59 | 89 | 13.38 x 6.10 | 89/89 | 82 | 84 | 105 | **80%** |
+| km_wc2018_f_shiyuqi | 25 | 69 | 27 | 0.66 | 65 | 13.40 x 6.10 | 65/65 | 79 | 65 | 66 | 98% |
+| km_wc2019_f_antonsen | 25 | 80 | 19 | 0.65 | 84 | 13.39 x 6.10 | 84/84 | 61 | 56 | 54 | 104% |
+| km_wtf2019_f_ginting | 25 | 113 | 22 | 0.65 | 111 | 13.40 x 6.10 | 111/111 | 84 | 111 | 111 | 100% |
+| kv_ae2026_sf_linchunyi | 30 | 90 | 32 | 0.65 | 111 | 13.39 x 6.10 | 111/111 | 75 | 108 | 111 | 97% |
+| kv_arc2025_f_chou | 30 | 92 | 38 | 0.62 | 110 | 13.40 x 6.10 | 110/110 | 59 | 108 | 106 | 102% |
+| kv_cm2026_qf_antonsen | 30 | 110 | 27 | 0.50 | 114 | 13.41 x 6.10 | 114/114 | 85 | 114 | 116 | 98% |
+| kv_den2025_qf_axelsen | 30 | 82 | 33 | 0.53 | 106 | 13.39 x 6.10 | 106/106 | 61 | 100 | 106 | 94% |
+| kv_fra2024_f_shiyuqi | 30 | 77 | 28 | 0.65 | 89 | 13.40 x 6.10 | 89/89 | 79 | 84 | 82 | 102% |
+| kv_fra2025_sf_popov | 30 | 61 | 29 | 0.55 | 82 | 13.39 x 6.10 | 82/82 | 76 | 77 | 74 | 104% |
+| kv_ina2024_sf_antonsen | 30 | 102 | 31 | 0.54 | 110 | 13.40 x 6.10 | 110/110 | 76 | 108 | 108 | 100% |
+| kv_inam2025_f_christie | 30 | 92 | 30 | 0.53 | 120 | 13.40 x 6.10 | 120/120 | 74 | 117 | 116 | 101% |
+| kv_ind2023_f_axelsen | 30 | 86 | 30 | 0.69 | 106 | 13.40 x 6.10 | 106/106 | 76 | 106 | 106 | 100% |
+| kv_ind2026_qf_lohkeanyew | 30 | 81 | 34 | 0.46 | 110 | 13.40 x 6.10 | 110/110 | 79 | 109 | 109 | 100% |
+| kv_jpn2026_qf_tanaka | 30 | 80 | 29 | 0.56 | 118 | 13.39 x 6.10 | 118/118 | 78 | 119 | 118 | 101% |
+| kv_mas2026_f_shiyuqi | 30 | 56 | 21 | 0.68 | 51 | 13.39 x 6.10 | 51/51 | 74 | 51 | 51 | 100% |
+| kv_sgp2025_f_luguangzu | 30 | 68 | 16 | 0.55 | 58 | 13.39 x 6.10 | 58/58 | 84 | 57 | 58 | 98% |
+| kv_tha2026_f_antonsen | 30 | 120 | 26 | 0.71 | 114 | 13.39 x 6.10 | 114/114 | 79 | 113 | 115 | 98% |
+| kv_wc2022_f_axelsen | 30 | 75 | 25 | 0.66 | 63 | 13.39 x 6.10 | 63/63 | 82 | 63 | 63 | 100% |
+| kv_wc2023_f_naraoka | 30 | 129 | 34 | 0.60 | 127 | 13.40 x 6.10 | 127/127 | 79 | 116 | 107 | **108%** |
+| kv_wc2025_f_shiyuqi | 30 | 103 | 25 | 0.61 | 106 | 13.40 x 6.10 | 106/106 | 77 | 106 | 110 | 96% |
+| kv_wc2026_qf_lanier | 30 | 90 | 31 | 0.53 | 115 | 13.40 x 6.10 | 115/115 | 76 | 114 | 114 | 100% |
+| kv_wtf2025_sf_shiyuqi | 30 | 62 | 30 | 0.46 | 71 | 13.39 x 6.10 | 71/71 | 83 | 71 | 71 | 100% |
+
+**2,941 rallies for 2,982 real points (98.6%)**; 29 of 32 matches within
+93-105%. Points = the final score, read off the score graphic at each
+match's last play span. `thr` = the automatic play threshold; `H` = play
+spans with a homography; `detected %` = play frames with a shuttle.
+
+The three outliers are understood: **All England 2019 (86%) and Singapore
+2019 (80%)** show some points entirely from side cameras, which "main camera
+only" drops by design; **World Champs 2023 (108%)** replays points from the
+main camera after a logo wipe (decision below).
+
+## Overnight 2026-10-02 → 03 (Claude, while I slept)
+
+I said: finish the 32 videos, then do what you can. Claude did not push,
+merge, download anything, or sign off any acceptance check.
+
+### Phases 2-3 on all 32 matches: done
+
+Every match: play detection + court fit. All 32 courts measure 13.38-13.41 m
+x 6.10 m; every play span of every match has a homography, all from one fit
+per match (no broadcast's main camera moved). Montage of all 32 overlays
+checked by eye: lines on lines on green, red (World Tour Finals 2019/2025)
+and grey (All England 2026) mats. Play share 16-38% of each video.
+
+Four real failures turned up on the new venues, each fixed in
+`src/segment.py` with a regression test:
+
+1. **All England 2019 — score graphic outvoted the court lines.** The score
+   bug is white in 54% of frames, the faint lines in 15-25%, so the pass-1
+   template was mostly score bug and matched dark close-ups best. Fix: pass 1
+   now picks the group of frames sharing the largest fixed layout
+   (`_dominant_layout`), not the most frequent pixels.
+2. **No fixed threshold fits every broadcast.** Play view scores 0.65-0.85
+   in 2018-19 (score graphic on screen during play), 0.75-0.95 in 2026 with a
+   non-play tail up to 0.55. Fix: `play_score: auto` — the valley of each
+   match's score histogram (chose 0.46-0.71 across the 32).
+3. **All England 2026 — 0.2-1.7 s glimpses of close-ups** passed; the court
+   check caught all 18. Fix: play spans under `play_min_s` (2 s) dropped.
+4. **India Open 2023 — the stream opens on the previous match** (men's
+   doubles final, same court, same camera), which passed as play. Fix: play
+   separated from the rest by more than `match_gap_min` (6 min) is dropped;
+   the log names it. (Longest in-match gap across all 32: 4.7 min.)
+
+Noted, not changed: 2018-19 broadcasts (and Singapore 2019 especially) show
+more play from low side cameras, so "main camera only" drops more there.
+
+### Shuttle tracking: play spans only
+
+`bda track --play-only` (new) tracks only the play spans from
+`view_segments.csv`, with one background median per match built from
+play-view frames — a cleaner background than a whole-broadcast median, and
+~30% of the frames to track. ~50 fps on the 5070.
+
+- **25 fps check (Momota, Worlds 2019 F):** 60 s run, 86-88% detected
+  during a long rally; 10 of 12 spot-checked detections in play are on the
+  shuttle; the false ones are in a close-up after the span, which
+  play-only tracking never sees. Overlay to watch:
+  `data/cache/km_wc2019_60s/overlay.mp4`.
+- **Rally counts vs real points** (points read off the score graphic at the
+  last play span; the last span is match point). `rally_max_gap_s` raised
+  2 → 4 s first: at 2 s, shuttles lost at a clear's apex split rallies
+  (Arctic: 127 rallies for 106 points).
+
+  | match | points | rallies | |
+  |---|---|---|---|
+  | All England 2026 SF (Lin 21-14, 18-21, 21-16) | 111 | 109 | 98% |
+  | Arctic Open 2025 F (Chou 21-11, 13-21, 21-19) | 106 | 108 | 102% |
+  | China Masters 2026 QF (Antonsen 18-21, 21-17, 21-18) | 116 | 114 | 98% |
+  | Denmark Open 2025 QF (Axelsen 13-21, 21-12, 21-18) | 106 | 101 | 95% |
+  | French Open 2024 F (Shi 22-20, 21-19) | 82 | 84 | 102% |
+  | French Open 2025 SF (Popov 21-11, 22-20) | 74 | 77 | 104% |
+  | Malaysia Open 2026 F (Kunlavut 23-21, 6-1, Shi retired) | ~51 | 51 | 100% |
+  | Singapore Open 2025 F (Kunlavut 21-6, 21-10) | 58 | 57 | 98% |
+  | India Open 2026 QF (Loh 14-21, 21-15, 21-17) | 109 | 109 | 100% |
+  | Japan Open 2026 QF (Tanaka 20-22, 21-16, 21-18) | 118 | 119 | 101% |
+  | Indonesia Masters 2025 F (Kunlavut 18-21, 21-17, 21-18) | 116 | 117 | 101% |
+  | India Open 2023 F (Kunlavut 22-20, 10-21, 21-12) | 106 | 106 | 100% |
+  | Indonesia Open 2024 SF (Antonsen 21-15, 19-21, 21-11) | 108 | 108 | 100% |
+
+  | Thailand Open 2026 F (Antonsen 9-21, 24-22, 21-18) | 115 | 113 | 98% |
+  | World Champs 2022 F (Axelsen 21-5, 21-16) | 63 | 63 | 100% |
+  | **World Champs 2023 F (Kunlavut 19-21, 21-18, 21-7)** | 107 | **116** | **108%** |
+  | China Open 2019 F (Momota 19-21, 21-17, 21-19) | 118 | 118 | 100% |
+  | Denmark Open 2018 F (Momota 22-20, 16-21, 21-15) | 115 | 114 | 99% |
+  | Denmark Open 2019 F (Momota 21-14, 21-12) | 68 | 63 | 93% |
+  | **All England 2019 F (Momota 21-11, 15-21, 21-15)** | 104 | **89** | **86%** |
+
+- **2018-19 broadcasts cut to a side camera mid-rally** (~1 s, then back).
+  Each main-camera piece became its own rally: All England 2019 had **170
+  rallies for 104 points**. Fix (method 6): rally pieces less than
+  `rally_max_gap_s` apart share one rally id, so a rally can span several
+  play segments with the off-camera second between them (no tracking
+  there). Modern broadcasts barely change (two matches lose one rally
+  each). All England 2019 → 89 (86%): the rest are points that broadcast
+  showed entirely off the main camera — the price of "main camera only" on
+  2018-19 footage. `segments.csv` consumers: a rally is all rows with that
+  `rally_id`, possibly in more than one segment.
+
+  15 of 16 matches within 95-104%: rallies are usable as the unit for the
+  free rally-outcome labels. Exact rally start/end is phase 5's job
+  (contacts). Note Malaysia 2026 ends in a retirement — a rally-outcome
+  label must not treat the last point as a normal winner.
+
+- **Known gap confirmed — replays from the main camera.** World Champs 2023
+  has 127 play spans for 107 points: some spans are slow-motion replays shot
+  by the main camera, and the frame before them is the tournament's logo
+  wipe (the broadcast's replay transition). Only this broadcast so far.
+  Shuttle speed alone does not separate them (between-point spans, shuttle
+  in hand, are slow too). **Decision for me:** a candidate fix is "a play
+  span that starts right after a logo wipe is a replay" — the wipe is one
+  repeated, identical graphic per broadcast, so it can be learned per
+  match like the line template. Or accept ~8% duplicate rallies on this one
+  match, or drop it from training.
+
+### Code changes (uncommitted)
+
+- `src/segment.py`: dominant-layout seed, auto threshold, `play_min_s`,
+  main-match cluster, rallies bridging short cuts away from the main
+  camera, narrower near-threshold report; method version 6 in the cache
+  key so all of this recomputes from cached masks.
+- `src/shuttle.py`: `track_play_spans`, `median_input`/`verbose` on
+  `track_shuttle`; cache keyed on a fingerprint of the play spans, not the
+  file's mtime.
+- `src/court.py`: same content fingerprint for its cache.
+- `src/cli.py`: `bda track --play-only`.
+- `configs/default.yaml`: `play_score: auto`, `play_min_s`, `match_gap_min`,
+  `rally_max_gap_s: 4.0`; `template_min_freq` removed.
+- Tests: 20 segment (was 13), 9 court, 21 shuttle — all passing.
+
+### Tracking: done (2026-10-03, paused 09:10-16:00 for my GPU)
+
+All 32 matches tracked over their play spans (~50 fps; ~7 h of GPU in
+total), then one consistency pass (play detection + court fit) over all 32
+with the final code: no errors, every play span has a homography. Results
+in the table at the top.
+
+To process a new match from scratch (WSL, venv active):
+
+```fish
+set id <file stem in data/raw>
+bda segment --video data/raw/$id.mp4 --match-id $id --sheet
+bda court   --video data/raw/$id.mp4 --match-id $id
+bda track   --video data/raw/$id.mp4 --match-id $id --play-only
+bda segment --video data/raw/$id.mp4 --match-id $id      # rallies, from the trajectory
+```
+
+Overviews: `data/cache/_overview/` (all 32 court overlays in one image).
 
 ## Decided 2026-10-02: training footage
 
