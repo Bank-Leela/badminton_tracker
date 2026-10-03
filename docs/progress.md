@@ -8,8 +8,38 @@ Last updated 2026-10-01. Picks up from `badminton-analysis-plan.md`.
 |---|---|---|
 | 1 — TrackNet wrapper | yes | 60 s run done; **waiting on me to watch the overlay** |
 | 2 — Segmentation | **rebuilt** 2026-10-01 (line template) | checked by eye on both videos; **hand-marked P/R not done** |
+| 3 — Court homography | yes, 2026-10-01 | fitted on both videos, length/width checks pass; **waiting on me to look at the overlays** |
 
-Committed, merged into `main` and pushed (2026-10-01).
+Phase 2 is committed, merged into `main` and pushed. Phase 3 is **not
+committed yet**. Phase 3 was started before phases 1-2 were signed off — my
+call, noted here so the sign-offs don't get lost.
+
+## Decided 2026-10-02: training footage
+
+- **Players:** men's singles featuring Kunlavut Vitidsarn or Kento Momota.
+  Every match also contributes the opponent's shots, so ~25 other players.
+- **Momota in his prime only:** 2018 to the Jan 2020 car accident. His four
+  matches in the Shuttlecock Trajectory Dataset (TrackNet's training data)
+  are excluded: 2019 Fuzhou and Korea Open finals vs Chou Tien Chen, 2019
+  World Tour Finals SF vs Wang Tzu Wei, 2019 Indonesia Open R16 vs Huang Yu
+  Xiang. The two Kunlavut-vs-Momota matches (2022, 2023) are post-injury, so
+  left out.
+- **32 matches, ~48 GB:** 19 Kunlavut (2022-2026) + 13 prime Momota
+  (2018-2020). The list, with YouTube ids, is `docs/footage.csv` — the only
+  record, since `data/raw/` is gitignored.
+- Why this many: shot count was never the problem (~1,000 shots per match);
+  match and player variety is, and splits must be by match. Plan: run the
+  automatic pipeline on all of them, give every shot the free rally-outcome
+  label, hand-label a spread subset.
+- **Downloaded 2026-10-02, all 32 verified** (open, 1080p, decode to the
+  end): 48.5 GB, 46.4 h of video. ~8 MB/s; one YouTube 403 mid-file
+  (Worlds 2023 F), fixed by re-running the loop, which resumes.
+- **Frame rate differs:** the 13 Momota 2018-2020 broadcasts are **25 fps**;
+  everything 2022+ is 30 fps. The pipeline is fine with that (all timing
+  config is in seconds, fps read per video), but TrackNet's accuracy at
+  25 fps is unchecked — run the phase 1 overlay check on one `km_` match.
+- Shuttle tracking all 42+ hours of video is ~a day of GPU at the measured
+  speed; worth tracking only play spans (about half the frames) first.
 
 ## Decided 2026-10-01
 
@@ -26,18 +56,55 @@ Committed, merged into `main` and pushed (2026-10-01).
    `data/labels/<match id>.play.csv` (`start_frame,end_frame`) and run
    `bda segment-eval`. Claude's eye check found every boundary right, but
    that is not an independent hand-marked truth.
-3. Then phase 3 (court homography). Note the template already finds the
-   main camera's court lines — a head start for line detection.
+   Quicker: `check_bounds.jpg` / `check_rejected.jpg` in each `_10m` cache
+   folder — green tiles must be the main camera, red ones must not.
+3. **Sign off phase 3:** open `court_overlay.png` in both `_10m` cache
+   folders — cyan lines must sit on the painted lines.
+4. **Try `bda court-click` once** — the click window is untested by hand
+   (Claude can't click). It needs WSL's display; `--segment 0` on a test
+   match id is harmless.
+5. **Commit** phase 3. Then phase 4 (players: YOLO-pose, needs a model
+   download).
 
 Running `bda` — open a terminal in the repo folder, then one at a time:
 
 ```fish
 wsl
 source .venv/bin/activate.fish
-explorer.exe (wslpath -w data/cache/wc2026_ms_f_10m/segments.png)
-explorer.exe (wslpath -w data/cache/cm2026_ws_f_10m/segments.png)
-bda segment-eval --match-id wc2026_ms_f_10m --truth data/labels/wc2026_ms_f_10m.play.csv
+explorer.exe (wslpath -w data/cache/wc2026_ms_f_10m/court_overlay.png)
+explorer.exe (wslpath -w data/cache/cm2026_ws_f_10m/court_overlay.png)
+bda court-click --video data/raw/wc2026_ms_f.mp4 --match-id wc2026_ms_f_10m --segment 0
 ```
+
+(From PowerShell instead: `ii data\cache\wc2026_ms_f_10m\court_overlay.png`.)
+
+## Phase 3 results (2026-10-01)
+
+`bda court` on both 10-minute chunks, ~24 s and <1 GB each:
+
+| match id | length | width | line cost | play spans with a homography |
+|---|---|---|---|---|
+| `wc2026_ms_f_10m` | 13.40 m | 6.10 m | 0.01 px | 15/15, all from the one match fit |
+| `cm2026_ws_f_10m` | 13.40 m | 6.10 m | 0.06 px | 19/19, all from the one match fit |
+
+- Zoomed 4x on all four corners and the centre-line / short-service
+  crossings: the projected lines sit within ~1 px of the painted ones.
+- **Independent check:** the net posts were not used in the fit, but stand
+  on the doubles sidelines at the middle of the court. Their feet, read by
+  hand off the background (+/-3 px, about +/-0.08 m), map to x = -3.06/+3.07,
+  y = 0.03/0.05 (Worlds) and x = -3.05/+3.06, y = 0.00/0.02 (China Masters).
+- No span needed a refit: the main camera did not move in either chunk.
+
+How it works and what was learned building it (details in `src/court.py`):
+
+- Saturation-based "white" misses horizontal lines: 4:2:0 chroma smears 2-3 px
+  lines into the green. Brightness top-hat finds all of them.
+- Hough segments sit on stroke *edges*; candidates are ranked on the
+  skeleton by longest run with mat on both sides, so crowd and lettering —
+  plenty of Hough segments, but bright neighbours — fall out.
+- Coordinates: origin at court centre, x right as seen from the camera, y
+  away from it. `homography.json` stores `image_to_court` per play span;
+  `court.load_homographies()` reads it for phase 4.
 
 - `wsl` first — `bda` only exists inside WSL. Typing `bda` in PowerShell gives
   "not recognized".
