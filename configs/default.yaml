@@ -58,3 +58,25 @@ segment:
   rally_smooth_s: 1.0         # box filter on the visible flag
   rally_min_s: 1.5            # drop shorter runs (a toss, a false detection)
   rally_max_gap_s: 2.0        # bridge shorter gaps (shuttle lost at a clear's apex)
+
+court:
+  # Pixel sizes are at 1080p and scale with the source height.
+  # Empty-court background: median of this many play-view frames.
+  background_frames: 61
+  # Line pixels: luma above the local background (white top-hat) by this
+  # much, with a structuring element wider than any court line.
+  tophat_px: 15
+  tophat_min: 30
+  # Hough: shortest segment kept; segments this close (px, same angle
+  # within 1 degree) are one line; best-supported lines kept per direction.
+  hough_min_len_px: 80
+  merge_px: 5
+  max_candidates: 10
+  # The plan's invariant: measured court length 13.40 m (and width 6.10 m)
+  # within this.
+  length_tolerance_m: 0.2
+  # Mean distance (px) from the projected court lines to line pixels. Above
+  # this a play span is refitted on its own frames, then left for manual.
+  max_cost_px: 2.0
+  # Frames per play span for that check.
+  span_frames: 7

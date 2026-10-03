@@ -5,6 +5,8 @@
     bda overlay --video data/raw/match.mp4 --match-id msia_open_f
     bda segment --video data/raw/match.mp4 --match-id msia_open_f --sheet
     bda segment-eval --match-id msia_open_f --truth data/labels/msia_open_f.play.csv
+    bda court   --video data/raw/match.mp4 --match-id msia_open_f
+    bda court-click --video data/raw/match.mp4 --match-id msia_open_f
 """
 
 from __future__ import annotations
@@ -150,6 +152,32 @@ def cmd_segment_eval(args) -> int:
     return 0
 
 
+def cmd_court(args) -> int:
+    from court import solve_homographies
+
+    cfg = load_config(args.config, args.overrides)
+    solve_homographies(cfg, args.match_id, args.video, force=args.force)
+    return 0
+
+
+def cmd_court_click(args) -> int:
+    """Manual fallback: click the four doubles corners on the empty-court background."""
+    import cv2
+
+    from court import apply_manual_corners, click_corners
+
+    cfg = load_config(args.config, args.overrides)
+    bg_file = cache_dir(cfg, args.match_id) / "court_background.png"
+    if not bg_file.exists():
+        raise SystemExit(f"no {bg_file}; run `bda court` first (it writes the background even when the fit fails)")
+    corners = click_corners(cv2.imread(str(bg_file)))
+    if corners is None:
+        print("court-click: aborted, nothing written")
+        return 1
+    apply_manual_corners(cfg, args.match_id, args.video, corners, args.segment or None)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bda", description="badminton match analysis")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -191,6 +219,21 @@ def main(argv: list[str] | None = None) -> int:
     p_eval.add_argument("--truth", required=True, help="CSV with start_frame,end_frame rows of play view")
     _add_common(p_eval)
     p_eval.set_defaults(func=cmd_segment_eval)
+
+    p_court = sub.add_parser("court", help="fit the court homography for each play span (needs `segment`)")
+    p_court.add_argument("--video", required=True)
+    p_court.add_argument("--match-id", required=True)
+    p_court.add_argument("--force", action="store_true", help="recompute even if cached; drops manual entries")
+    _add_common(p_court)
+    p_court.set_defaults(func=cmd_court)
+
+    p_click = sub.add_parser("court-click", help="manual fallback: click the four doubles corners")
+    p_click.add_argument("--video", required=True)
+    p_click.add_argument("--match-id", required=True)
+    p_click.add_argument("--segment", type=int, action="append", default=[],
+                         help="play segment id to apply to (repeatable); default: every span that needs it")
+    _add_common(p_click)
+    p_click.set_defaults(func=cmd_court_click)
 
     args = parser.parse_args(argv)
     return args.func(args)

@@ -6,8 +6,9 @@ Per-shot quality assessment from badminton match video. See
 **Status: phase 1 built and unit-tested; run on a 60 s BWF clip, overlay not
 yet signed off. Phase 2 (segmentation) rebuilt around a court-line template
 after the colour heuristic failed on real footage; checked by eye on two
-broadcasts, hand-marked precision/recall not yet run. Progress notes:
-`docs/progress.md`.**
+broadcasts, hand-marked precision/recall not yet run. Phase 3 (court
+homography) built and fitted on both broadcasts; overlay not yet signed off.
+Progress notes: `docs/progress.md`.**
 
 ## Setup
 
@@ -42,6 +43,8 @@ bda track --video data/raw/match.mp4 --match-id msia_open_f --seconds 60 --overl
 bda overlay --video data/raw/match.mp4 --match-id msia_open_f   # re-render from cache
 bda segment --video data/raw/match.mp4 --match-id msia_open_f --sheet
 bda segment-eval --match-id msia_open_f --truth data/labels/msia_open_f.play.csv
+bda court   --video data/raw/match.mp4 --match-id msia_open_f        # needs `segment`
+bda court-click --video data/raw/match.mp4 --match-id msia_open_f    # manual fallback
 ```
 
 Outputs land in `data/cache/<match_id>/`:
@@ -58,6 +61,10 @@ Outputs land in `data/cache/<match_id>/`:
 | `segments.csv` | `segment_id, start_frame, end_frame, is_play, rally_id` — tiles the range exactly once |
 | `segments.meta.json` | range, `segment:` config and `shuttle.csv` stamp that produced `segments.csv` |
 | `segments.png` | contact sheet: one thumbnail per span, green = play, red = not |
+| `homography.json` | per play span: `image_to_court` 3x3 (source pixels -> court metres), how it was found, fit cost, measured length/width |
+| `court_overlay.png` | every court line projected back onto the empty court, corners circled — the phase 3 eyeball check |
+| `court_background.png` | median of play-view frames: the empty court the fit runs on |
+| `court_lines.png` | line pixels found on that background |
 
 Every stage caches and skips work when its output exists. `--force`
 recomputes. Exceptions to "exists means reuse": `segments.csv` is redone
@@ -104,6 +111,7 @@ src/video.py     decode, frame iteration, clip extraction, overlay rendering
 src/cli.py       command line entry point
 src/shuttle.py   TrackNetV3 wrapper — the only module that imports external/
 src/segment.py   play view by court-line template, rally boundaries from the trajectory
+src/court.py     court model, line detection, image -> court homography, manual fallback
 ```
 
 `src/` is a flat module layout (`import shuttle`, not `import src.shuttle`),
@@ -177,6 +185,40 @@ shuttle-speed invariant should catch slow motion). A range that is mostly
 intro or interval has no dominant line layout, and `bda segment` stops with an
 error rather than guess.
 
+## Phase 3 — court homography
+
+Court coordinates are metres on the floor: origin at the centre of the court
+(under the net), x across it (+ to the right as seen from the main camera),
+y along it (+ away from the camera). Near baseline y = -6.70, doubles
+sidelines x = -/+3.05. The model is `court.py`'s constants, defined once.
+
+`bda court` fits on an empty-court background (median of ~61 play-view
+frames; players and shuttle vanish because the camera is static): line
+pixels by brightness top-hat, Hough on their skeleton, every pairing of two
+cross and two lengthwise candidates with model lines scored by how close
+*all* projected model lines land to line pixels, then a least-squares refit
+on every line intersection. Each play span is then checked on its own
+frames; a span where the camera moved is refitted on its own background, and
+one that still fails gets `image_to_court: null` and `needs_manual`.
+
+`bda court-click` is the fallback: it opens the empty-court background (needs
+a display — WSLg on Windows 11), you click the four doubles corners
+near-left, near-right, far-right, far-left, Enter. The corners are refined
+against the line pixels when that passes the checks. Applies to every span
+that needs it, or `--segment N` (repeatable).
+
+## Phase 3 acceptance check
+
+```bash
+bda court --video data/raw/<clip>.mp4 --match-id <id>_10m
+```
+
+Open `data/cache/<id>_10m/court_overlay.png`: every cyan line must sit on a
+painted line, the red circles on the doubles corners. The length check is
+built in: the court's length and width, measured from the fitted image
+lines through the homography, must be 13.40 m and 6.10 m within
+`court.length_tolerance_m` (0.2) or the fit raises `CourtCheckError`.
+
 ## Tests
 
 ```bash
@@ -185,6 +227,8 @@ uv run pytest
 
 The tests build their own synthetic videos: one where a marker's x position
 encodes the frame index (catches seek and off-by-one errors), and a fake
-broadcast — play view, crowd, play view, with a three-frame flash — for the
-segmenter. Tests that need the TrackNet checkpoint or checkout skip when it
-is absent.
+broadcast — play view, crowd, play view with a three-frame flash, a second
+camera, a score graphic throughout — for the segmenter; and a court rendered
+from a known homography with clutter and moving players, whose camera is
+bumped mid-match, for the court fit. Tests that need the TrackNet checkpoint
+or checkout skip when it is absent.
