@@ -22,6 +22,7 @@ from shuttle import (
     _window_indices,
     load_tracknet,
     resolve_device,
+    track_play_spans,
     track_shuttle,
 )
 
@@ -232,6 +233,42 @@ def test_chunking_does_not_change_the_result(synthetic_video):
     two = track_shuttle(synthetic_video["path"], cfg, 0, 48, model=model, chunk_frames=32)
     np.testing.assert_allclose(one[["x", "y", "confidence"]].to_numpy(), two[["x", "y", "confidence"]].to_numpy(), atol=1e-4)
     assert one["visible"].tolist() == two["visible"].tolist()
+
+
+@needs_ckpt
+def test_track_play_spans_tracks_exactly_the_play_frames(synthetic_video, tmp_path):
+    import cv2
+    import pandas as pd
+
+    cfg = load_config(overrides=["device=cpu", "shuttle.batch_size=4", f"paths.cache_dir={tmp_path / 'cache'}"])
+    out = tmp_path / "cache" / "synthetic"
+    out.mkdir(parents=True)
+    views = pd.DataFrame({"segment_id": [0, 1, 2], "start_frame": [0, 25, 35], "end_frame": [25, 35, 60],
+                          "is_play": [1, 0, 1], "score": [0.9, 0.1, 0.9]})
+    views.to_csv(out / "view_segments.csv", index=False)
+
+    df = track_play_spans(cfg, "synthetic", synthetic_video["path"])
+    assert list(df.columns) == SHUTTLE_COLUMNS
+    assert df["frame"].tolist() == list(range(0, 25)) + list(range(35, 60))
+    assert (out / "shuttle.csv").exists() and (out / "shuttle_background.png").exists()
+
+    # Each span is exactly `track_shuttle` over that span against the one shared
+    # background (the PNG is lossless, so it round-trips the model input).
+    median = np.ascontiguousarray(np.moveaxis(cv2.imread(str(out / "shuttle_background.png"))[..., ::-1], -1, 0))
+    alone = track_shuttle(synthetic_video["path"], cfg, 35, 60, median_input=median, verbose=False)
+    span = df[df.frame >= 35].reset_index(drop=True)
+    np.testing.assert_allclose(span[["x", "y", "confidence"]].to_numpy(), alone[["x", "y", "confidence"]].to_numpy(),
+                               atol=1e-5)
+
+    # Cached while the play spans are unchanged — even when `bda segment`
+    # rewrites the file with the same spans (new mtime, other columns) ...
+    views.assign(score=0.5).to_csv(out / "view_segments.csv", index=False)
+    pd.testing.assert_frame_equal(track_play_spans(cfg, "synthetic", synthetic_video["path"]), pd.read_csv(out / "shuttle.csv"))
+    # ... and a change stops rather than silently retracking or reusing.
+    views.assign(end_frame=[25, 40, 60], start_frame=[0, 25, 40]).to_csv(out / "view_segments.csv", index=False)
+    with pytest.raises(SystemExit, match="play spans changed"):
+        track_play_spans(cfg, "synthetic", synthetic_video["path"])
+    assert track_play_spans(cfg, "synthetic", synthetic_video["path"], force=True)["frame"].min() == 0
 
 
 @needs_ckpt

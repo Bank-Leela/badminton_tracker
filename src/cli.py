@@ -2,6 +2,7 @@
 
     bda info    --video data/raw/match.mp4
     bda track   --video data/raw/match.mp4 --match-id msia_open_f --seconds 60
+    bda track   --video data/raw/match.mp4 --match-id msia_open_f --play-only   # after `segment`
     bda overlay --video data/raw/match.mp4 --match-id msia_open_f
     bda segment --video data/raw/match.mp4 --match-id msia_open_f --sheet
     bda segment-eval --match-id msia_open_f --truth data/labels/msia_open_f.play.csv
@@ -64,9 +65,15 @@ def cmd_info(args) -> int:
 
 
 def cmd_track(args) -> int:
-    from shuttle import track_shuttle_cached
+    from shuttle import track_play_spans, track_shuttle_cached
 
     cfg = load_config(args.config, args.overrides)
+    if args.play_only:
+        if args.start or args.end is not None or args.seconds is not None or args.overlay:
+            raise SystemExit("--play-only tracks the play spans from `bda segment`; it takes no range or "
+                             "--overlay (render a stretch with `bda overlay --start ... --seconds ...`)")
+        track_play_spans(cfg, args.match_id, args.video, force=args.force)
+        return 0
     start, end = _resolve_range(args, Path(args.video))
     df = track_shuttle_cached(
         cfg,
@@ -192,6 +199,8 @@ def main(argv: list[str] | None = None) -> int:
     p_track.add_argument("--match-id", required=True)
     p_track.add_argument("--force", action="store_true", help="recompute even if cached")
     p_track.add_argument("--overlay", action="store_true", help="also render the overlay video")
+    p_track.add_argument("--play-only", action="store_true",
+                         help="track only the play spans found by `bda segment` (whole match, ~30%% of frames)")
     p_track.add_argument("--out", default=None, help="overlay output path")
     _add_range(p_track)
     _add_common(p_track)

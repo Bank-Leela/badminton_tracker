@@ -36,6 +36,8 @@ import os
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 import contextlib
+import hashlib
+import json
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -194,11 +196,16 @@ def _background_median(
     """
     n = end_frame - start_frame
     step = max(1, n // MEDIAN_SAMPLE_NUM)
+    return _background_median_at(video_path, range(start_frame, end_frame, step))
+
+
+def _background_median_at(video_path: str | Path, frames) -> np.ndarray:
+    """Median image (RGB float) over the given frame indices, increasing."""
     # Seek to each sample rather than decoding the whole range: on a full
     # match that is ~120 seeks instead of a second pass over 100k frames.
-    samples = sample_frames(video_path, range(start_frame, end_frame, step))
+    samples = sample_frames(video_path, frames)
     if not samples:
-        raise RuntimeError(f"no frames sampled for median over [{start_frame}, {end_frame})")
+        raise RuntimeError(f"no frames sampled for the background median of {video_path}")
     # BGR -> RGB, matching the frame order handed to the dataset.
     return np.median(np.stack(samples)[..., ::-1], axis=0)
 
@@ -365,6 +372,8 @@ def track_shuttle(
     end_frame: int | None = None,
     model: TrackNetModel | None = None,
     chunk_frames: int = DEFAULT_CHUNK_FRAMES,
+    median_input: np.ndarray | None = None,
+    verbose: bool = True,
 ) -> pd.DataFrame:
     """Track the shuttle over `[start_frame, end_frame)` of a video.
 
@@ -372,6 +381,11 @@ def track_shuttle(
     pixels. `visible == 0` means no detection; `x`, `y` are 0 there and must
     not be read. `confidence` is the peak heatmap response, and is meaningful
     even when `visible == 0` (a near-miss reads high).
+
+    `median_input` (model-sized, from `_median_to_input`) replaces the
+    background median otherwise built over the range — for tracking many
+    short ranges against one background. `verbose=False` silences the
+    progress bar and timing line.
     """
     info = probe_video(video_path)
     end_frame = info.frame_count if end_frame is None else end_frame
@@ -396,11 +410,10 @@ def track_shuttle(
     started = time.perf_counter()
 
     t0 = time.perf_counter()
-    median_input = (
-        _median_to_input(_background_median(video_path, start_frame, end_frame))
-        if model.bg_mode
-        else None
-    )
+    if median_input is None and model.bg_mode:
+        median_input = _median_to_input(_background_median(video_path, start_frame, end_frame))
+    if not model.bg_mode:
+        median_input = None
     timings["median"] = time.perf_counter() - t0
 
     results: dict[int, tuple[float, float, float, int]] = {}
@@ -411,7 +424,7 @@ def track_shuttle(
     margin = seq_len - 1
     stride = chunk_frames - 2 * margin
     timings["decode"] = timings["infer"] = 0.0
-    with tqdm(total=end_frame - start_frame, unit="frame", desc="tracknet") as progress:
+    with tqdm(total=end_frame - start_frame, unit="frame", desc="tracknet", disable=not verbose) as progress:
         for chunk_start in range(start_frame, end_frame, stride):
             chunk_end = min(chunk_start + chunk_frames, end_frame)
             if chunk_end - chunk_start < seq_len:
@@ -444,11 +457,12 @@ def track_shuttle(
     elapsed = time.perf_counter() - started
 
     n_frames = end_frame - start_frame
-    print(
-        f"tracknet: {n_frames} frames in {elapsed:.1f}s ({n_frames / elapsed:.1f} fps; "
-        f"median {timings['median']:.1f}s, decode+resize {timings['decode']:.1f}s, "
-        f"infer {timings['infer']:.1f}s; device={model.device.type}, {eval_mode}, {precision})"
-    )
+    if verbose:
+        print(
+            f"tracknet: {n_frames} frames in {elapsed:.1f}s ({n_frames / elapsed:.1f} fps; "
+            f"median {timings['median']:.1f}s, decode+resize {timings['decode']:.1f}s, "
+            f"infer {timings['infer']:.1f}s; device={model.device.type}, {eval_mode}, {precision})"
+        )
 
     rows = [
         (frame, *results.get(frame, (0.0, 0.0, 0.0, 0)))
@@ -506,4 +520,100 @@ def track_shuttle_cached(
         encoding="utf-8",
     )
     print(f"shuttle: wrote {out_file} ({len(df)} frames, {int(df.visible.sum())} detected)")
+    return df
+
+
+def _file_stamp(path: Path) -> list[int] | None:
+    if not path.exists():
+        return None
+    st = path.stat()
+    return [st.st_size, st.st_mtime_ns]
+
+
+def _play_digest(views: pd.DataFrame) -> str:
+    """Fingerprint of the play spans themselves, not of the file holding them.
+
+    `bda segment` rewrites view_segments.csv whenever its settings change,
+    usually with identical play spans; a size/mtime stamp would then demand
+    hours of retracking for nothing.
+    """
+    play = views.loc[views["is_play"] == 1, ["start_frame", "end_frame"]].to_numpy(dtype=np.int64)
+    return hashlib.sha1(play.tobytes()).hexdigest()
+
+
+def track_play_spans(
+    cfg: Config, match_id: str, video_path: str | Path, force: bool = False
+) -> pd.DataFrame:
+    """Track only the play spans phase 2 found, and write `shuttle.csv` for them.
+
+    A full broadcast is ~70% close-ups, replays and graphics where tracking is
+    wasted GPU time; and the background median TrackNet is given, built over a
+    whole broadcast, is a blur of all of those shots rather than the empty
+    court it expects. Here the median comes from play-view frames only, is
+    built once, and every play span is tracked against it.
+
+    `shuttle.csv` then holds rows for play-span frames only; a frame without a
+    row is not visible (`segment.split_rallies` and the overlay already read it
+    that way). Cached: reused while `view_segments.csv` is unchanged. If the
+    play spans change after tracking, this stops rather than silently
+    retracking (hours) or silently reusing a trajectory for other spans.
+    """
+    out_dir = cache_dir(cfg, match_id)
+    views_file = out_dir / "view_segments.csv"
+    if not views_file.exists():
+        raise SystemExit(f"no {views_file}; run `bda segment` first")
+    out_file = out_dir / "shuttle.csv"
+    meta_file = out_dir / "shuttle.meta.json"
+    views = pd.read_csv(views_file)
+    digest = _play_digest(views)
+    if out_file.exists() and not force:
+        meta = json.loads(meta_file.read_text()) if meta_file.exists() else {}
+        # "view_segments" holds a file stamp in trajectories tracked before
+        # play_digest existed; either matching means the same play spans.
+        same = meta.get("play_digest") == digest or meta.get("view_segments") == _file_stamp(views_file)
+        if meta.get("mode") == "play_spans" and same:
+            print(f"shuttle: reusing {out_file} (pass --force to recompute)")
+            return pd.read_csv(out_file)
+        what = "the play spans changed since it was tracked" if meta.get("mode") == "play_spans" \
+            else "it was tracked over a frame range, not the play spans"
+        raise SystemExit(f"{out_file} exists but {what}; pass --force to retrack")
+
+    play = views[views["is_play"] == 1]
+    if play.empty:
+        raise SystemExit(f"{views_file} has no play spans")
+    model = load_tracknet(cfg)
+    started = time.perf_counter()
+
+    median_input = None
+    if model.bg_mode:
+        pool = np.concatenate([np.arange(a, b) for a, b in zip(play["start_frame"], play["end_frame"])])
+        pick = np.unique(pool[np.linspace(0, len(pool) - 1, min(MEDIAN_SAMPLE_NUM, len(pool))).astype(int)])
+        median_input = _median_to_input(_background_median_at(video_path, pick.tolist()))
+        cv2.imwrite(str(out_dir / "shuttle_background.png"),
+                    np.ascontiguousarray(np.moveaxis(median_input, 0, -1)[..., ::-1]))
+
+    parts = []
+    total = int((play["end_frame"] - play["start_frame"]).sum())
+    with tqdm(total=total, unit="frame", desc=f"tracknet {match_id}") as bar:
+        for span in play.itertuples():
+            a, b = int(span.start_frame), int(span.end_frame)
+            if b - a < model.seq_len:
+                continue
+            parts.append(track_shuttle(video_path, cfg, a, b, model=model,
+                                       median_input=median_input, verbose=False))
+            bar.update(b - a)
+    df = pd.concat(parts, ignore_index=True)
+    elapsed = time.perf_counter() - started
+
+    df.to_csv(out_file, index=False)
+    meta_file.write_text(json.dumps({
+        "mode": "play_spans",
+        "video": str(Path(video_path).resolve()),
+        "play_digest": digest,
+        "play_spans": len(parts),
+        "eval_mode": cfg.get("shuttle.eval_mode", "weight"),
+        "precision": cfg.get("shuttle.precision", "fp32"),
+    }))
+    print(f"shuttle: wrote {out_file} — {len(parts)} play spans, {len(df)} frames in {elapsed:.0f}s "
+          f"({len(df) / elapsed:.1f} fps), {int(df.visible.sum())} detected ({df.visible.mean():.1%})")
     return df
