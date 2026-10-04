@@ -11,8 +11,7 @@ Last updated 2026-10-04. Picks up from `badminton-analysis-plan.md`.
 | 3 — Court homography | yes | **all 32 pass** the length/width check; overlays **waiting on me to look** |
 | 4 — Players | yes (`src/players.py`) | **all 32 run**: identity right on all 32; movement check passes **31/32** (wc2023 fails: phase 2 takes breaks for rallies); overlays **waiting on me to watch** |
 
-Phases 1-3 are on `main` (pushed 2026-10-03, `013131c`). Phase 4 is
-committed on local branch `phase4-players` (not merged, not pushed).
+Phases 1-4 are on `main` (phase 4 pushed 2026-10-04, `afa8327`).
 
 ## Phase 4 on all 32 matches (finished 2026-10-04 night)
 
