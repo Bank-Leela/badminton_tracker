@@ -409,7 +409,7 @@ def place_feet(poses: pd.DataFrame, kp: np.ndarray, homs: pd.DataFrame, height: 
     or `edge` — the box is cut by the bottom of the frame, so the feet are out
     of shot and `court_x/y` is NaN (`edge_x/y` keeps the box-bottom point,
     good enough to say which half someone is on). `choose_players` adds
-    `occluded`.
+    `occluded`, `select_players` `flagged` (`blank_flagged`).
 
     The ankle midpoint, not a point weighted towards the planted foot: on
     twelve matches weighting by each leg's knee-to-ankle drop tripled the
@@ -732,8 +732,9 @@ def select_players(cfg: Config, match_id: str, force: bool = False) -> pd.DataFr
 
     One row per player per frame they were found in: `frame, player_id,
     side, court_x, court_y, keypoints[17][3]` plus the box, feet and speed.
-    Asserts `movement_violations` is empty inside rallies (raises
-    `PlayerCheckError`); between points people walk on and off, and nothing
+    Checks `movement_violations` inside rallies: each spot is blanked
+    (`blank_flagged`), and more than `max_violations` in a match raises
+    `PlayerCheckError`. Between points people walk on and off, and nothing
     downstream reads those frames.
     """
     out_dir = cache_dir(cfg, match_id)
@@ -776,6 +777,9 @@ def select_players(cfg: Config, match_id: str, force: bool = False) -> pd.DataFr
 
     in_rally = rally_mask(sel["frame"].to_numpy(), pd.read_csv(seg_file))
     bad = movement_violations(sel[in_rally], fps, cfg_sel)
+    flagged = blank_flagged(sel, bad, fps, float(cfg_sel.blank_s))
+    if flagged.any():
+        sel["speed"] = player_speeds(sel, fps, cfg_sel)  # no speed across a blanked stretch
 
     table = _table({c: sel[c].to_numpy() for c in PLAYER_COLUMNS if c != "keypoints"},
                    kp[sel["_row"].to_numpy()], PLAYER_COLUMNS)
@@ -798,23 +802,49 @@ def select_players(cfg: Config, match_id: str, force: bool = False) -> pd.DataFr
                                 f"over_{report:g}": round(float((g["speed"] > report).mean()), 4)}
                             for s, g in rally.groupby("side")},
         "violations": bad.to_dict("records"),
+        "flagged_frames": int(flagged.sum()),
     }
     meta_file.write_text(json.dumps(meta, indent=1))
     over = max(v[f"over_{report:g}"] for v in meta["speed_mps_rally"].values()) if len(rally) else 0.0
     print(f"players: wrote {out_file} — near found in {meta['found']['near']:.1%} of play frames, "
           f"far {meta['found']['far']:.1%}; ends changed {len(ident['switches'])}x "
           f"(colour separation {ident['separation']}); up to {over:.1%} of rally frames over {report:g} m/s; "
-          f"{len(bad)} movement violation(s)")
+          f"{len(bad)} movement violation(s) blanked ({int(flagged.sum())} rows)")
     if len(ident["switches"]) > int(cfg_sel.max_end_changes):
         raise PlayerCheckError(f"{match_id}: players changed ends {len(ident['switches'])} times "
                                f"(at most {cfg_sel.max_end_changes} in a match): identities are confused; "
                                f"see {meta_file}")
-    if len(bad):
+    if len(bad) > int(cfg_sel.max_violations):
         raise PlayerCheckError(f"{match_id}: {len(bad)} place(s) inside rallies where a player's track "
                                f"cannot be one person moving (step over {cfg_sel.max_step_m} m between frames, "
-                               f"or over {cfg_sel.max_sustained_mps} m/s for {cfg_sel.sustained_window_s} s) — "
-                               f"identity swap, hidden feet or bad homography:\n{bad.head(10).to_string()}")
+                               f"or over {cfg_sel.max_sustained_mps} m/s for {cfg_sel.sustained_window_s} s); "
+                               f"more than {cfg_sel.max_violations} means something systematic — identity "
+                               f"swaps, hidden feet, a bad homography, or rallies that are not rallies:\n"
+                               f"{bad.head(10).to_string()}")
     return load_players(out_file)
+
+
+def blank_flagged(sel: pd.DataFrame, bad: pd.DataFrame, fps: float, pad_s: float) -> np.ndarray:
+    """Blank the court position around each movement violation, in place; return which rows.
+
+    A flagged spot (a jump read as distance, a hidden foot guessed wrong,
+    a corrupted frame) is a position nobody downstream should use: those
+    rows keep their pose but get `foot_src = flagged` and no `court_x/y`,
+    `pad_s` either side. The spots stay listed in `players.meta.json`.
+    Decided 2026-10-04, after looking at all 23 on 32 matches.
+    """
+    hit = np.zeros(len(sel), bool)
+    if bad.empty:
+        return hit
+    pad = int(round(pad_s * fps))
+    f = sel["frame"].to_numpy()
+    key = sel["segment_id"].to_numpy(), sel["player_id"].to_numpy()
+    for v in bad.itertuples():
+        hit |= ((key[0] == v.segment_id) & (key[1] == v.player_id)
+                & (f >= v.start_frame - pad) & (f < v.end_frame + pad))
+    sel.loc[hit, ["court_x", "court_y"]] = np.nan
+    sel.loc[hit, "foot_src"] = "flagged"
+    return hit
 
 
 def load_players(path: str | Path) -> pd.DataFrame:

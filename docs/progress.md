@@ -9,7 +9,7 @@ Last updated 2026-10-04. Picks up from `badminton-analysis-plan.md`.
 | 1 — TrackNet wrapper | yes; play-only tracking added | **all 32 matches tracked**; 30 fps and 25 fps 60 s overlays **waiting on me to watch** |
 | 2 — Segmentation | rebuilt 2026-10-01; hardened on 32 matches | rallies match real point totals (below); **hand-marked P/R not done** |
 | 3 — Court homography | yes | **all 32 pass** the length/width check; overlays **waiting on me to look** |
-| 4 — Players | yes (`src/players.py`) | **all 32 run**: identity right on all 32; movement check passes 22/32 — **a decision waiting on me** (below); overlays **waiting on me to watch** |
+| 4 — Players | yes (`src/players.py`) | **all 32 run**: identity right on all 32; movement check passes **31/32** (wc2023 fails: phase 2 takes breaks for rallies); overlays **waiting on me to watch** |
 
 Phases 1-3 are on `main` (pushed 2026-10-03, `013131c`). Phase 4 is
 committed on local branch `phase4-players` (not merged, not pushed).
@@ -18,10 +18,10 @@ committed on local branch `phase4-players` (not merged, not pushed).
 
 Detection: 10.1 h of GPU at ~35 fps. Selection: seconds a match.
 
-| match | points | near | far | far hidden | ends changed (gap s) | >4 m/s near/far | steps | sustained | check |
+| match | points | near | far | far hidden | ends changed (gap s) | >4 m/s near/far | flagged steps | flagged sustained | check |
 |---|---|---|---|---|---|---|---|---|---|
 | km_ae2019_f_axelsen | 104 | 98.6% | 98.3% | 4.4% | 126, 163, 71 | 10% / 11% | 0 | 0 | pass |
-| km_chn2019_f_ginting | 118 | 99.7% | 98.3% | 8.7% | 122, 123, 77 | 10% / 12% | 1 | 0 | **FAIL** |
+| km_chn2019_f_ginting | 118 | 99.7% | 98.3% | 8.7% | 122, 123, 77 | 10% / 12% | 1 | 0 | pass (blanked) |
 | km_den2018_f_chou | 115 | 99.2% | 98.7% | 1.2% | 131, 124, 75 | 6% / 10% | 0 | 0 | pass |
 | km_den2019_f_chenlong | 68 | 99.9% | 99.2% | 1.4% | 118 | 6% / 10% | 0 | 0 | pass |
 | km_inam2019_f_antonsen | 109 | 100.0% | 98.8% | 0.5% | 137, 137, 120 | 5% / 8% | 0 | 0 | pass |
@@ -29,12 +29,12 @@ Detection: 10.1 h of GPU at ~35 fps. Selection: seconds a match.
 | km_jpn2019_f_christie | 71 | 99.2% | 99.7% | 0.6% | 125 | 6% / 8% | 0 | 0 | pass |
 | km_mas2018_f_leechongwei | 82 | 99.5% | 98.0% | 2.8% | 134 | 7% / 11% | 0 | 0 | pass |
 | km_mym2020_f_axelsen | 78 | 99.7% | 99.0% | 3.4% | 133 | 7% / 11% | 0 | 0 | pass |
-| km_sgp2019_f_ginting | 105 | 98.8% | 98.4% | 1.5% | 131, 128, 73 | 8% / 10% | 2 | 0 | **FAIL** |
+| km_sgp2019_f_ginting | 105 | 98.8% | 98.4% | 1.5% | 131, 128, 73 | 8% / 10% | 2 | 0 | pass (blanked) |
 | km_wc2018_f_shiyuqi | 66 | 99.7% | 98.7% | 4.1% | 142 | 7% / 12% | 0 | 0 | pass |
 | km_wc2019_f_antonsen | 54 | 98.2% | 98.0% | 1.9% | 113 | 8% / 10% | 0 | 0 | pass |
-| km_wtf2019_f_ginting | 111 | 100.0% | 98.3% | 5.0% | 143, 123, 101 | 10% / 12% | 1 | 0 | **FAIL** |
-| kv_ae2026_sf_linchunyi | 111 | 96.8% | 94.9% | 7.9% | 114, 127, 65 | 8% / 9% | 2 | 0 | **FAIL** |
-| kv_arc2025_f_chou | 106 | 98.5% | 98.2% | 3.5% | 118, 113, 70 | 5% / 9% | 2 | 0 | **FAIL** |
+| km_wtf2019_f_ginting | 111 | 100.0% | 98.3% | 5.0% | 143, 123, 101 | 10% / 12% | 1 | 0 | pass (blanked) |
+| kv_ae2026_sf_linchunyi | 111 | 96.8% | 94.9% | 7.9% | 114, 127, 65 | 8% / 9% | 2 | 0 | pass (blanked) |
+| kv_arc2025_f_chou | 106 | 98.5% | 98.2% | 3.5% | 118, 113, 70 | 5% / 9% | 2 | 0 | pass (blanked) |
 | kv_cm2026_qf_antonsen | 116 | 99.8% | 98.0% | 6.8% | 138, 127, 60 | 6% / 8% | 0 | 0 | pass |
 | kv_den2025_qf_axelsen | 106 | 98.4% | 97.8% | 1.6% | 117, 131, 69 | 5% / 7% | 0 | 0 | pass |
 | kv_fra2024_f_shiyuqi | 82 | 99.8% | 99.2% | 2.2% | 192 | 6% / 9% | 0 | 0 | pass |
@@ -43,15 +43,15 @@ Detection: 10.1 h of GPU at ~35 fps. Selection: seconds a match.
 | kv_inam2025_f_christie | 116 | 98.8% | 98.3% | 0.3% | 119, 121, 79 | 4% / 6% | 0 | 0 | pass |
 | kv_ind2023_f_axelsen | 106 | 98.7% | 97.3% | 7.9% | 121, 120, 69 | 6% / 11% | 0 | 0 | pass |
 | kv_ind2026_qf_lohkeanyew | 109 | 99.7% | 98.9% | 5.3% | 123, 132, 68 | 7% / 9% | 0 | 0 | pass |
-| kv_jpn2026_qf_tanaka | 118 | 99.9% | 98.9% | 5.8% | 143, 128, 75 | 6% / 9% | 1 | 0 | **FAIL** |
+| kv_jpn2026_qf_tanaka | 118 | 99.9% | 98.9% | 5.8% | 143, 128, 75 | 6% / 9% | 1 | 0 | pass (blanked) |
 | kv_mas2026_f_shiyuqi | 51 | 99.1% | 99.3% | 3.5% | 131 | 6% / 11% | 0 | 0 | pass |
 | kv_sgp2025_f_luguangzu | 58 | 99.6% | 98.8% | 2.2% | 120 | 6% / 7% | 0 | 0 | pass |
-| kv_tha2026_f_antonsen | 115 | 98.0% | 97.8% | 1.0% | 141, 180, 88 | 5% / 8% | 1 | 0 | **FAIL** |
-| kv_wc2022_f_axelsen | 63 | 99.1% | 99.2% | 1.5% | 130 | 6% / 9% | 1 | 0 | **FAIL** |
+| kv_tha2026_f_antonsen | 115 | 98.0% | 97.8% | 1.0% | 141, 180, 88 | 5% / 8% | 1 | 0 | pass (blanked) |
+| kv_wc2022_f_axelsen | 63 | 99.1% | 99.2% | 1.5% | 130 | 6% / 9% | 1 | 0 | pass (blanked) |
 | kv_wc2023_f_naraoka | 107 | 99.4% | 98.9% | 3.0% | 134, 144, 79 | 4% / 8% | 9 | 2 | **FAIL** |
 | kv_wc2025_f_shiyuqi | 110 | 99.8% | 99.1% | 3.6% | 121, 132, 97 | 5% / 10% | 0 | 0 | pass |
 | kv_wc2026_qf_lanier | 114 | 99.7% | 98.8% | 4.9% | 132, 128, 72 | 6% / 9% | 0 | 0 | pass |
-| kv_wtf2025_sf_shiyuqi | 71 | 99.9% | 98.9% | 4.3% | 128 | 6% / 9% | 1 | 0 | **FAIL** |
+| kv_wtf2025_sf_shiyuqi | 71 | 99.9% | 98.9% | 4.3% | 128 | 6% / 9% | 1 | 0 | pass (blanked) |
 
 `near`/`far` = play frames with that player found. `far hidden` = far rally
 frames blanked because the near player hides their feet.
@@ -61,8 +61,8 @@ once (two games), every one with 104-118 three times (three games), each at
 a break of 60 s or more — never mid-game. (Malaysia 2026 is the retirement:
 one change, in game 2.)
 
-**Movement check: 22/32 pass.** The 23 flagged spots in the other ten, each
-looked at frame by frame:
+**Movement check: 22/32 have no flagged spot.** The 23 flagged spots in the
+other ten, each looked at frame by frame:
 
 | kind | where | how many | size |
 |---|---|---|---|
@@ -76,18 +76,17 @@ Only World Champs 2023's are on frames that matter to me: phase 2 calls a
 break with cleaners on court a rally (same match as the replay problem).
 The rest are single frames in otherwise clean matches.
 
-### Decision waiting on me
+### Decided 2026-10-04: blank flagged spots, fail above 5 a match
 
-What the check does with spots like these. Options I see:
+Each flagged spot gets `foot_src = flagged` and no court position for 0.2 s
+either side (pose kept), and stays listed in `players.meta.json`; more than
+5 in a match raises `PlayerCheckError`. (Rejected: raising the step limit to
+2.0 m — the 1.9 m hidden-feet error and the corrupted video would then pass
+unblanked; keep failing and decide per match.)
 
-1. **Blank the flagged frames and pass** (`court_x/y` NaN for ±0.2 s around
-   each), keep listing them in `players.meta.json`, and fail only when a match
-   has many (say more than 5 — a systematic problem; the others have 1-2).
-   Phase 5 then never sees a teleport. 31/32 would pass; wc2023 (11) still
-   fails, rightly.
-2. **Raise the step limit to 2.0 m.** 31/32 pass too, but a 1.9 m hidden-
-   feet error and the corrupted video then pass silently, unblanked.
-3. **Keep failing** and decide per match.
+Result: **31/32 pass**; 254 rows blanked over all 32 (12-28 a match where
+any). World Champs 2023 fails (11 spots) — rightly, until phase 2 stops
+calling its breaks rallies.
 
 **Overlays to watch** (players-overlay, rendered):
 `data/cache/kv_wc2025_f_shiyuqi/players_overlay_117700.mp4` (far-end jump),

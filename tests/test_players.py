@@ -471,18 +471,42 @@ def test_overlay_renders_the_stretch(match):
     assert probe_video(path).frame_count == 40
 
 
-def test_select_asserts_on_an_identity_swap(match, monkeypatch):
-    cfg, out = match["cfg"], match["out"]
+def _select_with(match, monkeypatch, damage):
+    """Run select with `damage(chosen)` applied to the chosen players' positions."""
+    cfg = match["cfg"]
     detect_poses(cfg, "m", match["video"])
     import players
 
     real = players.choose_players
+    monkeypatch.setattr(players, "choose_players", lambda placed, cfg_sel: damage(real(placed, cfg_sel)))
+    return select_players(cfg, "m", force=True)
 
-    def swapping(placed, cfg_sel):  # from frame 30, the near "player" is someone 2 m behind them
-        chosen = real(placed, cfg_sel)
+
+def test_one_bad_spot_is_blanked_and_passes(match, monkeypatch):
+    """From frame 30 the near "player" reads 2 m further back: one step, blanked."""
+    def swap(chosen):
         chosen.loc[(chosen.side == "near") & chosen.frame.between(30, 59), "court_y"] -= 2.0
         return chosen
 
-    monkeypatch.setattr(players, "choose_players", swapping)
-    with pytest.raises(PlayerCheckError, match="identity swap"):
-        select_players(cfg, "m", force=True)
+    players = _select_with(match, monkeypatch, swap)
+    meta = json.loads((match["out"] / "players.meta.json").read_text())
+    assert [v["kind"] for v in meta["violations"]] == ["step"]
+    pad = round(CFG.players.blank_s * FPS)
+    near = players[players.side == "near"].set_index("frame")
+    step = meta["violations"][0]["start_frame"]
+    blanked = near.index[near.foot_src == "flagged"]
+    assert blanked.min() == step - pad and blanked.max() == step + 1 + pad
+    assert near.loc[blanked, ["court_x", "court_y"]].isna().all().all()
+    assert near.loc[blanked, "speed"].isna().all()
+    assert near.drop(blanked)["court_y"].notna().all()  # everything else kept
+
+
+def test_many_bad_spots_fail(match, monkeypatch):
+    """The near "player" flicks to someone 2 m away and back, every 5 frames."""
+    def flicker(chosen):
+        hit = (chosen.side == "near") & chosen.frame.between(10, 59) & ((chosen.frame // 5) % 2 == 1)
+        chosen.loc[hit, "court_y"] -= 2.0
+        return chosen
+
+    with pytest.raises(PlayerCheckError, match="systematic"):
+        _select_with(match, monkeypatch, flicker)

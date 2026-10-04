@@ -3,9 +3,11 @@
 Per-shot quality assessment from badminton match video. See
 `docs/badminton-analysis-plan.md` for the full build plan.
 
-**Status: phases 1-3 run on 32 broadcasts (rallies within 1.4% of the real
-point count overall; every court 13.40 x 6.10 m); overlays not yet signed
-off. Phase 4 (players) built; running on the 32. Progress notes:
+**Status: phases 1-4 run on 32 broadcasts — rallies within 1.4% of the real
+point count overall; every court 13.40 x 6.10 m; both players found in
+95-100% of play frames, identity right across every change of ends, the
+movement check passing on 31 (World Champs 2023 fails: phase 2 takes breaks
+for rallies there). Overlays not yet signed off. Progress notes:
 `docs/progress.md`.**
 
 ## Setup
@@ -278,10 +280,12 @@ crop-and-upscale pass is not needed. 1920 added only crowd.
   centred difference over 0.2 s. The plan's cap does not separate errors
   from play: elite players run back to front at ~5 m/s, and a far-end jump
   reads 10-15 m/s for 0.2 s (ankles off the floor read as distance). The
-  share of rally frames over 4 m/s is reported (5-10%); what raises
-  `PlayerCheckError` inside rallies is what one person cannot do — a step
-  over 1.5 m between frames (swaps, hidden feet, camera bumps: 2-3 m), or
-  over 6 m/s averaged over 1 s.
+  share of rally frames over 4 m/s is reported (4-12%). What is checked
+  inside rallies is what one person cannot do — a step over 1.5 m between
+  frames (swaps, hidden feet, camera bumps: 2-3 m), or over 6 m/s averaged
+  over 1 s. Each spot found is blanked (`foot_src = flagged`, no court
+  position, 0.2 s either side) and listed in `players.meta.json`; more than
+  5 in a match is systematic and raises `PlayerCheckError`.
 
 Keypoints are stored raw. `players.smooth_keypoints` is a centred
 Savitzky-Golay fit (5 frames, quadratic): a wrist's speed peak keeps its

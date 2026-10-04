@@ -162,3 +162,10 @@ players:
   max_step_m: 1.5
   max_sustained_mps: 6.0
   sustained_window_s: 1.0
+  # Each flagged spot is blanked (no court position) this long either side;
+  # more than max_violations in a match is something systematic and fails
+  # (decided 2026-10-04: on 32 matches the clean ones had 0-2 — jumps read
+  # as distance, hidden feet, corrupted frames — and World Champs 2023, with
+  # breaks taken for rallies, 11).
+  blank_s: 0.2
+  max_violations: 5
