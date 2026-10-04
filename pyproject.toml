@@ -13,6 +13,9 @@ dependencies = [
     "parse>=1.20",          # required by the vendored TrackNetV3 code
     "pyyaml>=6.0",
     "pyarrow>=15.0",        # parquet, needed from phase 4 on
+    "ultralytics>=8.4",     # YOLO-pose + ByteTrack (phase 4). AGPL-3.0
+    "lap>=0.5.12",          # ByteTrack's assignment solver
+    "torchvision",          # install from the same CUDA index as torch
 ]
 
 [project.optional-dependencies]
@@ -32,7 +35,7 @@ build-backend = "setuptools.build_meta"
 # `import shuttle`, not `import src.shuttle`.
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["cli", "config", "video", "shuttle", "segment", "court"]
+py-modules = ["cli", "config", "video", "shuttle", "segment", "court", "players"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

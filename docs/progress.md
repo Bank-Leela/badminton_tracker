@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-10-03 evening. Picks up from `badminton-analysis-plan.md`.
+Last updated 2026-10-04. Picks up from `badminton-analysis-plan.md`.
 
 ## Where things stand
 
@@ -8,11 +8,73 @@ Last updated 2026-10-03 evening. Picks up from `badminton-analysis-plan.md`.
 |---|---|---|
 | 1 — TrackNet wrapper | yes; play-only tracking added | **all 32 matches tracked**; 30 fps and 25 fps 60 s overlays **waiting on me to watch** |
 | 2 — Segmentation | rebuilt 2026-10-01; hardened on 32 matches | rallies match real point totals (below); **hand-marked P/R not done** |
-| 3 — Court homography | yes (branch `phase3-court`) | **all 32 pass** the length/width check; overlays **waiting on me to look** |
+| 3 — Court homography | yes | **all 32 pass** the length/width check; overlays **waiting on me to look** |
+| 4 — Players | yes (`src/players.py`, uncommitted) | pose detection running on the 32 (~20 min each); movement check redesigned with me (below) |
 
-Phase 2 is on `main` (pushed). Phase 3 + footage docs are committed on local
-branch `phase3-court` (not merged, not pushed). **Everything since the night
-of 2026-10-02 is uncommitted** — see "Overnight" below.
+Phases 1-3 are on `main` (pushed 2026-10-03, `013131c`). Phase 4 is
+uncommitted.
+
+## Phase 4 — players (started 2026-10-03)
+
+Downloads I approved: `ultralytics` 8.4.172 + `lap` + torchvision 0.29.1+cu130
+(from the PyTorch index, matching torch), and `yolo26x-pose.pt` (126 MB,
+ultralytics/assets v8.4.0) in `external/models/`.
+
+**Input size 1280.** At 640 the far player (150-220 px tall) was missed in
+some frames, confidence 0.3-0.8; at 1280 found in 100% of 800 rally frames
+over four matches, ankles confident 99%+. 1920 adds only crowd. So no
+crop-and-upscale pass. ~36 fps on the 5070 → ~9-10 h for the 32.
+
+**The plan's 4 m/s check failed on real play** (first match, World Champs
+2025 final): 6-8% of rally frames read over 4 m/s. Traced: a genuine
+back-to-front run, 4 m in 1.2 s, peak ~5 m/s, both ankles agreeing; and
+far-end jumps reading 10-15 m/s for 0.2 s (ankles off the floor read as
+depth — about 3x at that end). The real errors were the far player hidden
+behind the near one (feet guessed on the near player's legs: 2-3 m jumps in
+one frame). **I chose (2026-10-04): fail on a step over 1.5 m between
+frames, or over 6 m/s averaged over 1 s; report the share over 4 m/s.**
+
+What the first five matches taught the selection (each fix verified on the
+frames that tripped the check):
+
+1. **Hidden feet** — blank the far player's position when their foot lands
+   on the near player's head-to-feet region, unless both ankles are still
+   at 0.9+ (measured: those read like feet in the open, median 0.17 m off
+   the path either side; below 0.9, 0.3-1 m off). Also when the far box is
+   cut short behind the near player (bending for the shuttle). Costs 1.5-8%
+   of far rally frames.
+2. **Identity** — All England 2026: both players in white shirts; colours
+   also shift at the far end (darker, red boards behind). Per-span colour
+   matching found no change of ends. Now: ends change only at breaks
+   (40 s+); blocks between breaks are scored as wholes with one far-end
+   colour shift for the match. All five matches: 3 changes, each at a game
+   break or the 11-point interval in game 3.
+3. **Someone else on court** — in an interval the far player went to their
+   bag and a court cleaner was the only person on that half. Tracks whose
+   clothes match neither player (Lab distance > 100; real tracks ≤ ~90) are
+   dropped.
+4. **Side by the net** — feet by the net post read a few cm over the line;
+   within 1 m of the net a person's half is their track's usual half.
+
+| match | near found | far found | ends changed at (gap s) | steps | sustained |
+|---|---|---|---|---|---|
+| kv_wc2025_f_shiyuqi | 99.8% | 99.1% | 121, 132, 97 | 0 | 0 |
+| kv_ae2026_sf_linchunyi | 96.8% | 94.9% | 114, 127, 65 | 2 | 0 |
+| kv_arc2025_f_chou | 98.5% | 98.2% | 118, 113, 70 | 2 | 0 |
+| kv_cm2026_qf_antonsen | 99.8% | 98.0% | 138, 127, 60 | 0 | 0 |
+| kv_den2025_qf_axelsen | 98.4% | 97.8% | 117, 131, 69 | 0 | 0 |
+
+Left: Arctic Open 2025's two are **corrupted video** (smeared macroblocks
+for ~2 s at frame 103,490); All England 2026's are a far-end jump reading a
+1.54 m step, and the near player at the net post winning the far half
+between points. To decide once all 32 are in: what to do with frames like
+these (blank them and pass, or keep failing).
+
+**Also noticed:** the 2025-26 "30 fps" broadcasts repeat a frame every 6th
+frame in places (1.2-2.4% of near-player frames have keypoints identical to
+the previous frame, spaced 6 or 12 frames apart) — a 25→30 fps conversion
+showing through. It averages out over the 0.2 s speed window; phase 5's
+frame-level timing (contact frames) should know.
 
 ## Phases 1-3 on all 32 matches (finished 2026-10-03)
 

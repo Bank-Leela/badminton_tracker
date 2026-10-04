@@ -8,6 +8,8 @@
     bda segment-eval --match-id msia_open_f --truth data/labels/msia_open_f.play.csv
     bda court   --video data/raw/match.mp4 --match-id msia_open_f
     bda court-click --video data/raw/match.mp4 --match-id msia_open_f
+    bda players --video data/raw/match.mp4 --match-id msia_open_f   # after `court`
+    bda players-overlay --video data/raw/match.mp4 --match-id msia_open_f --start 30000 --seconds 30
 """
 
 from __future__ import annotations
@@ -185,6 +187,29 @@ def cmd_court_click(args) -> int:
     return 0
 
 
+def cmd_players(args) -> int:
+    from players import detect_poses, select_players
+
+    cfg = load_config(args.config, args.overrides)
+    detect_poses(cfg, args.match_id, args.video, force=args.force)
+    if not args.detect_only:
+        select_players(cfg, args.match_id, force=True)  # seconds; always redone
+    return 0
+
+
+def cmd_players_overlay(args) -> int:
+    from players import write_players_overlay
+
+    cfg = load_config(args.config, args.overrides)
+    start, end = _resolve_range(args, Path(args.video))
+    if end is None:
+        raise SystemExit("give --seconds or --end: a whole match is hours of video")
+    out = Path(args.out) if args.out else cache_dir(cfg, args.match_id) / "players_overlay.mp4"
+    write_players_overlay(cfg, args.match_id, args.video, out, start, end)
+    print(f"players-overlay: wrote {out}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bda", description="badminton match analysis")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -243,6 +268,22 @@ def main(argv: list[str] | None = None) -> int:
                          help="play segment id to apply to (repeatable); default: every span that needs it")
     _add_common(p_click)
     p_click.set_defaults(func=cmd_court_click)
+
+    p_players = sub.add_parser("players", help="pose + tracks of both players over the play spans (needs `court`)")
+    p_players.add_argument("--video", required=True)
+    p_players.add_argument("--match-id", required=True)
+    p_players.add_argument("--force", action="store_true", help="redetect even if cached (~20 min a match)")
+    p_players.add_argument("--detect-only", action="store_true", help="stop after poses.parquet")
+    _add_common(p_players)
+    p_players.set_defaults(func=cmd_players)
+
+    p_pover = sub.add_parser("players-overlay", help="render players.parquet onto a stretch of the video")
+    p_pover.add_argument("--video", required=True)
+    p_pover.add_argument("--match-id", required=True)
+    p_pover.add_argument("--out", default=None, help="default: data/cache/<match_id>/players_overlay.mp4")
+    _add_range(p_pover)
+    _add_common(p_pover)
+    p_pover.set_defaults(func=cmd_players_overlay)
 
     args = parser.parse_args(argv)
     return args.func(args)

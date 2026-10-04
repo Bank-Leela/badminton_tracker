@@ -9,6 +9,8 @@ paths:
   tracknet_repo: external/TrackNetV3
   tracknet_ckpt: external/TrackNetV3/ckpts/TrackNet_best.pt
   inpaintnet_ckpt: external/TrackNetV3/ckpts/InpaintNet_best.pt
+  # YOLO26x-pose, ultralytics/assets release v8.4.0 (126 MB).
+  pose_model: external/models/yolo26x-pose.pt
 
 # cuda | mps | cpu | auto
 # auto picks cuda, then mps, then cpu. Development is on macOS (mps/cpu);
@@ -93,3 +95,70 @@ court:
   max_cost_px: 2.0
   # Frames per play span for that check.
   span_frames: 7
+
+players:
+  detect:
+    # Changing any of these needs `--force` (~20 min of GPU a match).
+    # Pixels on the long side. 640 loses the far player in some frames;
+    # 1920 adds nothing over 1280.
+    imgsz: 1280
+    precision: fp16           # CUDA only; fp32 elsewhere
+    batch_size: 8             # batching barely helps: the GPU is the limit
+    conf: 0.1                 # ByteTrack wants the low-confidence boxes too
+    # Tracked: people whose feet land within |x|, |y| metres of the court
+    # centre (the doubles court is ±3.05 x ±6.70). Wide enough for line
+    # judges and the umpire, so `select` can be checked against them.
+    region_m: [7.0, 11.0]
+    # Keypoint confidence for the feet used in that test (both ankles, else
+    # the box bottom) and for the shirt/shorts colours.
+    kpt_conf: 0.5
+    tracker:                  # ultralytics' bytetrack.yaml defaults
+      track_high_thresh: 0.25
+      track_low_thresh: 0.1
+      new_track_thresh: 0.25
+      track_buffer: 30
+      match_thresh: 0.8
+      fuse_score: true
+  # Everything below reruns in seconds (`players.parquet`).
+  # Both ankles at least this confident: feet = ankle midpoint; else the
+  # bottom centre of the box.
+  ankle_conf: 0.5
+  # Who counts as a player: feet within the doubles court plus these margins
+  # (line judges and the umpire sit further out).
+  side_margin_m: 1.0
+  back_margin_m: 2.0
+  # Within this of the net a person's half is their track's usual half, not
+  # the sign of y (feet by the post read a few cm over the line).
+  net_band_m: 1.0
+  # Far player's feet behind the near player: kept only if both ankles are
+  # at least this sure (at 0.9+ they were as accurate as feet in the open;
+  # below, off by 0.3-1 m at the median). Otherwise court_x/y is NaN.
+  hidden_ankle_conf: 0.9
+  # Identity across ends. Ends change only in a break: a gap between play
+  # spans at least this long (game breaks are 2 min, the 11-point interval
+  # 1 min; between points is under 30 s).
+  min_break_s: 40.0
+  max_end_changes: 3          # after games 1 and 2, and at 11 in the third
+  # Colour misfit (Lab units, summed over blocks of play) charged per change
+  # of ends, so weak evidence keeps the players where they were.
+  switch_cost: 10.0
+  # A chosen track whose median clothes colour is further than this (Lab)
+  # from the player expected there is someone else — a court cleaner while
+  # the player is at their bag — and is dropped. Real player tracks: up to
+  # ~90 on the first four matches; cleaners and officials: 105-195.
+  max_track_colour: 100.0
+  # Speed (the `speed` column): positions median-filtered over this many
+  # frames, then a centred difference over this window. Short on purpose
+  # (plan: a long smoothing window caused a measurement bug before).
+  smooth_frames: 5
+  speed_window_s: 0.2
+  # The plan's 4 m/s: reported (share of rally frames above it), not
+  # asserted — elite players run back to front at ~5 m/s, and a far-end
+  # jump reads 10-15 m/s for 0.2 s (ankles off the floor read as distance).
+  report_speed_mps: 4.0
+  # Asserted inside rallies instead (decided 2026-10-04): what one person
+  # moving cannot do. Real play on the first match peaked at 1.2 m a frame
+  # and 5.5 m/s over 1 s; swaps and hidden feet jump 2-3 m in one frame.
+  max_step_m: 1.5
+  max_sustained_mps: 6.0
+  sustained_window_s: 1.0
