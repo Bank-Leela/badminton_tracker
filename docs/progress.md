@@ -12,7 +12,7 @@ Last updated 2026-10-05 morning. Picks up from `badminton-analysis-plan.md`.
 | 4 — Players | yes (`src/players.py`) | **all 32 run**: identity right on all 32; movement check passes **31/32** (wc2023 fails: phase 2 takes breaks for rallies); overlays **waiting on me to watch** |
 | 5 — Hits, 3D, shots.csv | yes (`contacts`, `camera`, `flight`, `features`, `review`) | **all 32 run**, 30,266 shots; my own 20-shot pass 17/20 contacts clearly right — **your 20-shot check waiting** (`review/`) |
 
-Phases 1-4 are on `main` (phase 4 pushed 2026-10-04, `afa8327`).
+Phases 1-5 are on `main` (phase 5 pushed 2026-10-05, `abb4fdf`).
 
 ## Phase 5 — hits, 3D flights, shots.csv (built 2026-10-04 night, on my own)
 
