@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-10-05 morning. Picks up from `badminton-analysis-plan.md`.
+Last updated 2026-10-05 (phase 6 built overnight). Picks up from `badminton-analysis-plan.md`.
 
 ## Where things stand
 
@@ -11,8 +11,105 @@ Last updated 2026-10-05 morning. Picks up from `badminton-analysis-plan.md`.
 | 3 — Court homography | yes | **all 32 pass** the length/width check; overlays **waiting on me to look** |
 | 4 — Players | yes (`src/players.py`) | **all 32 run**: identity right on all 32; movement check passes **31/32** (wc2023 fails: phase 2 takes breaks for rallies); overlays **waiting on me to watch** |
 | 5 — Hits, 3D, shots.csv | yes (`contacts`, `camera`, `flight`, `features`, `review`) | **all 32 run**, 30,266 shots; my own 20-shot pass 17/20 contacts clearly right — **your 20-shot check waiting** (`review/`) |
+| 6 — Labelling tool | yes (`bda label`, `src/labeler.py`, `tools/labeler/`) | works end to end in the browser, keyboard only; reviewed, 9 problems fixed; **your 50-in-10-minutes check waiting** |
 
-Phases 1-5 are on `main` (phase 5 pushed 2026-10-05, `abb4fdf`).
+Phases 1-5 are on `main` (phase 5 pushed 2026-10-05, `abb4fdf`). Phase 6 is
+committed on the local branch `phase6-labeler`, not merged or pushed.
+
+## Phase 6 — the labelling tool (built overnight 2026-10-04 → 05, on my own)
+
+You said "decide everything on your own". What I decided, and why. Each one
+is config or a few lines, so tell me what to change.
+
+1. **No new dependencies.** It's a stdlib HTTP server (`ThreadingHTTPServer`,
+   HTTP/1.1 keep-alive) bound to 127.0.0.1 only, plus one HTML file with
+   plain JavaScript. Nothing to install, nothing reachable from the network.
+2. **Clips are JPEG frames on a canvas, not a video file.** OpenCV here can't
+   write H.264 and there's no ffmpeg; frames also give an exact cut, instant
+   replay and ¼-speed slow motion for free. A clip is ~56 JPEGs at 1280 px,
+   rendered on demand: 3 workers, the next 5 shots rendered ahead, the next
+   2 downloaded ahead, 24 clips cached.
+3. **Clip window:** 1.5 s before the contact (`labeler.before_s`) to **10
+   frames after** (`after_frames`), cut **2 frames before the next hit or
+   landing** if that comes sooner (`next_event_margin`), and never across a
+   camera cut. Without that last cap, 742 of 30,266 clips showed the reply
+   (quick net exchanges). `clip_range` raises if a clip would ever run past
+   either limit.
+4. **Classes:** the plan's five on keys `1`-`5`, plus **`x` = not a shot /
+   can't judge** for when phase 5 got the hit wrong. Without it, those
+   shots would get forced into a class. Those are also the phase 5 errors
+   worth counting.
+5. **Order:** one random order over all 32 matches by default (`--seed 0`,
+   the same order every time), so the first 50 or 500 labels spread over
+   players and venues rather than one match. `--order rally` plays one
+   match in sequence.
+6. **Show who hit:** the hitter's box (yellow until the contact, magenta
+   after, dark outline so it shows on red courts), a red tick for the
+   contact on the time bar, and match · rally · shot · serve · near/far
+   player in text. `h` hides the box.
+7. **Never lose a label:**
+   - `data/labels/shot_labels.csv` is append-only, one row per key press,
+     fsynced before the page shows it as saved.
+   - The latest row per shot wins; `Backspace` writes a `clear` row.
+   - A crash-torn last line is skipped, and the next label starts on a
+     fresh line.
+   - The page keeps unsaved labels in memory and in localStorage, and
+     retries every 2 s.
+   - The CSV is committed to git (`.gitignore` exception).
+   - Every row also records `seconds` spent on the shot, the `labeler`
+     (`--labeler`, default `bank`) and `tool_version`, so labels from two
+     people, or from an older clip rule, can be told apart later.
+8. **Keys by position (`e.code`)**, so they work with the Thai layout
+   active or Caps Lock on.
+9. **Pace on screen:** labels this session, per-minute rate, and from the
+   50th label `last 50 in m:ss`, timed from when the 50th-last shot came up
+   to the latest key press. That is the acceptance number: under 10:00
+   passes.
+
+### Review before handing it over
+
+A review workflow (four angles: data safety, reply leakage, server,
+frontend, plus one checking the plan's acceptance rules; 3 verifiers per
+finding) confirmed 18 findings, 9 distinct problems. **All 9 are fixed:**
+
+| Problem | Fix |
+|---|---|
+| A crash-torn last line made the *next* label glue onto it and vanish, while the page said "saved" | write a line break first if the file doesn't end in one; tested |
+| 742 clips showed the reply (next hit within 10 frames) | cut 2 frames before the next hit or landing; tested frame by frame |
+| Startup re-read the label file once per shot: ~8.5 min once any label existed | read it once (startup is now seconds) |
+| Each clip took ~3.2 s to load (`localhost` lookup + a new connection per frame) | HTTP/1.1 keep-alive, the printed URL is `127.0.0.1`; tested |
+| One label the server refused (4xx) blocked every later save, for good | refused labels are set aside (kept in localStorage, shown in red), the rest carry on |
+| With browser storage blocked, labels were never sent but showed "saved ✓" | the queue lives in memory, storage only mirrors it; a blocked storage is shown |
+| Holding an arrow key rendered and downloaded every clip passed (~20 s for the one landed on) | arrows move at once, load only after 150 ms still |
+| With the Thai layout (or Caps Lock) the label keys did nothing | keys by position |
+| `?` couldn't close help; the pace maths overstated the rate and could print `m:60` | fixed |
+
+**Checked in the browser** on a scratch label file (`/tmp/labeler_test`, not
+the real one):
+
+- Thai-layout `3` labels and saves.
+- Help opens and closes with `?`; Shift alone leaves it open; any other key
+  closes it without acting.
+- 30 held-arrow steps loaded 2 clips, not 30.
+- A refused label is set aside and the next one still saves.
+- With the server stopped, the page shows "NOT SAVED (1 waiting)", then
+  saves once the server is back.
+- An unsaved label in storage gets sent after a page reload.
+- At a 3 s pace each next clip was ready about 20 ms after the key press.
+  It had already been fetched.
+
+124 tests pass (13 new ones for phase 6).
+
+**Your part:**
+
+```bash
+bda label
+```
+
+Then open http://127.0.0.1:8765/ and label 50 shots without touching the
+mouse. The top bar shows `last 50 in m:ss`. The plan's bar is under 10:00.
+Also tell me if a class is unclear, or if the clip should run longer or
+shorter before the hit.
 
 ## Phase 5 — hits, 3D flights, shots.csv (built 2026-10-04 night, on my own)
 

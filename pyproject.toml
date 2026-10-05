@@ -35,7 +35,7 @@ build-backend = "setuptools.build_meta"
 # `import shuttle`, not `import src.shuttle`.
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["cli", "config", "video", "shuttle", "segment", "court", "players", "contacts", "camera", "flight", "features", "review"]
+py-modules = ["cli", "config", "video", "shuttle", "segment", "court", "players", "contacts", "camera", "flight", "features", "review", "labeler"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

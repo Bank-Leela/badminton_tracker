@@ -6,6 +6,7 @@ data/*
 !data/labels/
 data/labels/*
 !data/labels/.gitkeep
+!data/labels/*.csv
 
 # Python
 __pycache__/

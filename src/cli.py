@@ -12,6 +12,7 @@
     bda players-overlay --video data/raw/match.mp4 --match-id msia_open_f --start 30000 --seconds 30
     bda shots   --match-id msia_open_f                               # after `players`
     bda shots-review --video data/raw/match.mp4 --match-id msia_open_f --n 20
+    bda label                                                        # then open http://localhost:8765
 """
 
 from __future__ import annotations
@@ -233,6 +234,21 @@ def cmd_shots_review(args) -> int:
     return 0
 
 
+def cmd_label(args) -> int:
+    """Phase 6: the keyboard-only labelling page on localhost."""
+    from labeler import serve
+
+    cfg = load_config(args.config, args.overrides)
+    server = serve(cfg, args.match or None, args.order, args.seed, args.port, args.labeler)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("labeler: stopped")
+    finally:
+        server.server_close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bda", description="badminton match analysis")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -321,6 +337,16 @@ def main(argv: list[str] | None = None) -> int:
     p_review.add_argument("--seed", type=int, default=0)
     _add_common(p_review)
     p_review.set_defaults(func=cmd_shots_review)
+
+    p_label = sub.add_parser("label", help="label shot outcomes in the browser, keyboard only (needs `shots`)")
+    p_label.add_argument("--match", action="append", default=[], help="only this match (repeatable); default: all")
+    p_label.add_argument("--order", choices=["random", "rally"], default="random",
+                         help="random: one shuffle over all shots (default); rally: match by match, in play order")
+    p_label.add_argument("--seed", type=int, default=0, help="the shuffle; keep it to resume the same order")
+    p_label.add_argument("--port", type=int, default=8765)
+    p_label.add_argument("--labeler", default="bank", help="who is labelling (stored with each label)")
+    _add_common(p_label)
+    p_label.set_defaults(func=cmd_label)
 
     args = parser.parse_args(argv)
     return args.func(args)

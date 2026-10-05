@@ -245,3 +245,15 @@ features:
   # the next event holds a hit the contact detection missed: the flight's
   # features are left empty.
   max_flight_s: 2.2
+
+labeler:
+  # A shot's clip: from before_s before the contact to after_frames after it
+  # (plan: ~10 — the labeller must not see the reply), inside its play span.
+  before_s: 1.5
+  after_frames: 10
+  # ...and this many frames short of the next contact or landing, when that
+  # comes sooner (fast exchanges): the reply is never shown.
+  next_event_margin: 2
+  clip_width: 1280            # px; the shuttle is lost below ~1000
+  jpeg_quality: 85
+  cache_clips: 24             # rendered clips kept in memory

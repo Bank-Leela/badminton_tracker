@@ -91,6 +91,7 @@ Outputs land in `data/cache/<match_id>/`:
 | `repeats.npz` | repeated (duplicate) frames over the rallies, for `FrameClock` |
 | `shots.csv` | one row per hit: the features of `docs/features.md` — **the interface to everything downstream** |
 | `review/` | phase 5 acceptance sheets and `review.csv` |
+| `data/labels/shot_labels.csv` | phase 6: every label key press (latest per shot wins) — committed |
 
 Every stage caches and skips work when its output exists. `--force`
 recomputes. Exceptions to "exists means reuse": `segments.csv` is redone
@@ -144,6 +145,8 @@ src/camera.py    full camera from the homography and the net tape
 src/flight.py    a shot's 3D flight (gravity + drag) fitted to its image track
 src/features.py  shots.csv: the per-shot features of docs/features.md
 src/review.py    acceptance sheets: random shots against the video
+src/labeler.py   the labelling server: queue, clips (JPEG frames), append-only label store
+tools/labeler/   the keyboard-only labelling page
 ```
 
 `src/` is a flat module layout (`import shuttle`, not `import src.shuttle`),
@@ -363,6 +366,51 @@ contact (the contact outlined in red), the frame where the shot ends with the
 landing point drawn on the court, and a top-down map; fill in
 `review.csv` (`contact_ok`, `landing_ok`).
 
+## Phase 6 — the labelling tool
+
+```bash
+bda label                       # all matches, one random order; then open http://127.0.0.1:8765
+bda label --match kv_wc2025_f_shiyuqi --order rally   # one match, in play order
+```
+
+A local page (`tools/labeler/index.html`, served by `src/labeler.py` on
+127.0.0.1 only), keyboard only:
+
+| key | |
+|---|---|
+| `1`-`5` | label the shot (the plan's five outcome classes) and move on |
+| `x` | not a real shot / can't judge (the hit detector was wrong, the clip is broken) |
+| `Space` | replay; `s` or `Shift+Space` replays at ¼ speed |
+| `→` `↓` / `←` `↑` | next / previous shot; `n` next unlabelled |
+| `Backspace` | remove this shot's label |
+| `h` | hide / show the hitter's box; `?` help |
+
+Keys go by position, so they work on any keyboard layout (Thai included).
+
+Each clip runs from 1.5 s before the contact to **10 frames after it, never
+later**, and stops 2 frames short of the next hit or landing when that comes
+sooner (a quick net reply) — the reply is never shown (`labeler.clip_range`
+enforces it, a test checks it frame by frame) — and never across a camera
+cut. The hitter is
+boxed (yellow, magenta from the hit on); a tick on the bar under the picture
+marks the contact. Frames are JPEGs played on a canvas: exact cut, instant
+replay, slow motion, no codec needed. The next clips are rendered and
+loaded while you watch the current one.
+
+Labels go to **`data/labels/shot_labels.csv`** (committed — they're precious):
+one row per key press, written and fsynced before the page shows it as
+saved; unsaved labels wait in the browser and are retried, so a crash or a
+server restart loses nothing. The latest row per shot wins (relabelling is
+just labelling again). `labeler.load_labels()` gives the latest label per
+shot, joined to `shots.csv` on `(match_id, frame)`. Columns: `time_utc,
+match_id, frame, rally_id, shot_index, hitter_id, hitter_side, label,
+seconds` (time spent on the shot), `labeler, tool_version`.
+
+## Phase 6 acceptance check
+
+`bda label`, then label 50 shots without the mouse. The top bar shows the
+rate and, from the 50th label on, `last 50 in m:ss` — under 10:00 passes.
+
 ## Tests
 
 ```bash
@@ -380,5 +428,9 @@ network over a rendered match — two players who change ends, plus an umpire
 movement check jumps, sprints, swaps and flicker. Phase 5's cut synthetic
 shuttle tracks at known hits, play a whole rally (held serve, five hits, a
 landing) past stand-in players, recover a focal length from a rendered net,
-and fit 3D flights filmed by a known camera. Tests that need the
+and fit 3D flights filmed by a known camera. Phase 6's render clips from the
+marker video and read the frame index back off every JPEG (start, contact,
+last frame, and the early stop before a quick reply), tear the label file
+mid-row and keep writing, and drive the server over HTTP: labels, refusals,
+path tricks, a kept-alive connection. Tests that need the
 TrackNet checkpoint or checkout skip when it is absent.

@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shot labeller</title>
+<style>
+  :root { --bg: #111; --fg: #ddd; --dim: #888; --accent: #ffb000; --ok: #3c3; --bad: #e33; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+               font: 14px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { display: flex; flex-direction: column; }
+  #top { display: flex; gap: 18px; align-items: baseline; padding: 6px 12px; flex-wrap: wrap; }
+  #top b { color: #fff; }
+  #save { margin-left: auto; }
+  #save.ok { color: var(--ok); } #save.bad { color: var(--bad); font-weight: 700; }
+  #stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; position: relative; }
+  canvas { max-width: 100%; max-height: 100%; display: block; background: #000; }
+  #msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+         font-size: 18px; color: var(--dim); pointer-events: none; }
+  #info { padding: 4px 12px; color: var(--dim); min-height: 22px; }
+  #keys { display: flex; gap: 6px; padding: 6px 12px 10px; flex-wrap: wrap; }
+  .k { border: 1px solid #333; border-radius: 6px; padding: 4px 8px; min-width: 120px; }
+  .k kbd { font: 700 15px monospace; color: #fff; background: #333; border-radius: 4px; padding: 0 6px; margin-right: 6px; }
+  .k .n { float: right; color: var(--dim); margin-left: 8px; }
+  .k.cur { border-color: var(--accent); background: #2a2200; }
+  .k.flash { background: #154015; }
+  #help { position: fixed; inset: 10% 15%; background: #1b1b1b; border: 1px solid #444; border-radius: 8px;
+          padding: 16px 24px; overflow: auto; z-index: 5; }
+  #help[hidden] { display: none; }
+  #help td { padding: 2px 12px 2px 0; } #help kbd { font: 700 14px monospace; color: #fff; }
+</style>
+</head>
+<body>
+<div id="top">
+  <span id="progress">loading…</span>
+  <span id="rate"></span>
+  <span id="save"></span>
+</div>
+<div id="stage"><canvas id="cv" width="1280" height="720"></canvas><div id="msg"></div></div>
+<div id="info"></div>
+<div id="keys"></div>
+<div id="help" hidden>
+  <h3>Keys — no mouse needed</h3>
+  <table>
+    <tr><td><kbd>1</kbd>–<kbd>5</kbd></td><td>label the shot and move on</td></tr>
+    <tr><td><kbd>x</kbd></td><td>not a real shot / can't judge (the hit detector was wrong, the clip is broken)</td></tr>
+    <tr><td><kbd>Space</kbd></td><td>replay</td></tr>
+    <tr><td><kbd>s</kbd> or <kbd>Shift</kbd>+<kbd>Space</kbd></td><td>replay slowly (¼ speed)</td></tr>
+    <tr><td><kbd>→</kbd> <kbd>↓</kbd> / <kbd>←</kbd> <kbd>↑</kbd></td><td>next / previous shot</td></tr>
+    <tr><td><kbd>n</kbd></td><td>next shot without a label</td></tr>
+    <tr><td><kbd>Backspace</kbd></td><td>remove this shot's label</td></tr>
+    <tr><td><kbd>h</kbd></td><td>hide / show the hitter's box</td></tr>
+    <tr><td><kbd>?</kbd></td><td>this help</td></tr>
+  </table>
+  <p>The clip stops a few frames after the hit on purpose: judge the shot, not the reply.
+     The yellow box marks who hits (magenta from the hit on); the red tick on the bar under the picture marks the contact.</p>
+  <p>Every label is saved to <code>data/labels/shot_labels.csv</code> before it shows as saved.
+     If the server is unreachable, labels wait in the browser and are retried.</p>
+</div>
+<script>
+"use strict";
+const S = {
+  queue: [], labels: {}, classes: {}, i: 0, clip: null, imgs: [], loadToken: 0,
+  playing: false, speed: 1, t0: 0, showHitter: true, shownAt: 0,
+  session: [],            // {shown, at} (ms) of each label made this session
+  pre: new Map(),         // key -> Promise<{meta, imgs}>
+  pending: [],            // labels not yet confirmed saved: the source of truth...
+  rejected: [],           // ...and ones the server refused (shown, never retried)
+  storageOk: true,        // ...mirrored to localStorage, to survive a reload or crash
+  navTimer: 0,
+};
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const $ = id => document.getElementById(id);
+const PENDING = "labeler.pending", REJECTED = "labeler.rejected";
+
+// --- server -----------------------------------------------------------------------------
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} :
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) {
+    const e = new Error(`${path}: ${r.status} ${(await r.text()).slice(0, 200)}`);
+    e.status = r.status;
+    throw e;
+  }
+  return r.json();
+}
+
+function loadStored(name) { try { return JSON.parse(localStorage.getItem(name) || "[]"); } catch { S.storageOk = false; return []; } }
+function mirror() {
+  try {
+    localStorage.setItem(PENDING, JSON.stringify(S.pending));
+    localStorage.setItem(REJECTED, JSON.stringify(S.rejected));
+    S.storageOk = true;
+  } catch { S.storageOk = false; }  // still sent from memory; only reload-safety is lost
+}
+// The server's labels, with anything not yet saved laid over them.
+function adoptLabels(server) {
+  S.server = server;
+  S.labels = { ...server };
+  for (const q of S.pending) { if (q.label === "clear") delete S.labels[q.key]; else S.labels[q.key] = q.label; }
+}
+
+let flushing = false;
+// Send waiting labels oldest first. A network or server error: keep them and retry.
+// A refusal (4xx: unknown shot, bad label): set it aside, visibly, and carry on —
+// one bad item must never hold up the labels behind it.
+async function flush() {
+  if (flushing) return;
+  flushing = true;
+  while (S.pending.length) {
+    const item = S.pending[0];
+    try {
+      const res = await api("/api/label", item);
+      S.pending = S.pending.filter(q => q.id !== item.id);
+      mirror();
+      adoptLabels(res.labels);
+      render();
+    } catch (e) {
+      if (e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429) {
+        S.pending = S.pending.filter(q => q.id !== item.id);
+        S.rejected.push({ ...item, error: e.message });
+        mirror();
+        adoptLabels(S.server || {});  // stop showing the refused label as made
+        render();
+        continue;
+      }
+      showStatus();
+      flushing = false;
+      setTimeout(flush, 2000);
+      return;
+    }
+  }
+  flushing = false;
+  showStatus();
+}
+function showStatus() {
+  const el = $("save"), parts = [];
+  let cls = "ok";
+  if (S.pending.length) { parts.push(`NOT SAVED (${S.pending.length} waiting) — retrying…`); cls = "bad"; }
+  else parts.push("saved ✓");
+  if (S.rejected.length) { parts.push(`${S.rejected.length} refused by the server (kept in localStorage "${REJECTED}")`); cls = "bad"; }
+  if (!S.storageOk) { parts.push("browser storage unavailable: unsaved labels would not survive a reload"); cls = "bad"; }
+  el.textContent = parts.join(" · ");
+  el.className = cls;
+}
+
+// --- clips --------------------------------------------------------------------------------
+function loadClip(key) {
+  if (S.pre.has(key)) return S.pre.get(key);
+  const enc = encodeURIComponent(key);
+  const p = api(`/api/clip/${enc}`).then(meta => Promise.all(
+    Array.from({ length: meta.n }, (_, j) => new Promise((ok, bad) => {
+      const im = new Image();
+      im.onload = () => ok(im);
+      im.onerror = () => bad(new Error(`frame ${j} of ${key}`));
+      im.src = `/api/frame/${enc}/${j}.jpg`;
+    }))).then(imgs => ({ meta, imgs })));
+  p.catch(() => S.pre.delete(key));
+  S.pre.set(key, p);
+  if (S.pre.size > 8) S.pre.delete(S.pre.keys().next().value);
+  return p;
+}
+
+function prefetchAhead() {
+  const keys = S.queue.slice(S.i + 1, S.i + 6).map(s => s.key);
+  api("/api/prefetch", { keys }).catch(() => {});        // the server renders the next five
+  keys.slice(0, 2).forEach(k => loadClip(k).catch(() => {}));  // the next two, frames and all
+}
+
+// Arrow keys move at once but load only the shot you stop on: holding a key
+// used to start a full clip download for every shot it passed.
+function navigate(i) {
+  if (!S.queue.length) return;
+  S.i = Math.max(0, Math.min(S.queue.length - 1, i));
+  S.loadToken++; S.playing = false; S.clip = null;
+  $("msg").textContent = "…";
+  render();
+  clearTimeout(S.navTimer);
+  S.navTimer = setTimeout(() => show(S.i), 150);
+}
+
+async function show(i) {
+  if (!S.queue.length) return;
+  clearTimeout(S.navTimer);
+  S.i = Math.max(0, Math.min(S.queue.length - 1, i));
+  const shot = S.queue[S.i], token = ++S.loadToken;
+  S.playing = false; S.clip = null;
+  S.shownAt = performance.now();  // the labeller's clock for this shot starts now, waiting included
+  $("msg").textContent = "loading clip…";
+  render();
+  try {
+    const c = await loadClip(shot.key);
+    if (token !== S.loadToken) return;  // moved on meanwhile
+    S.clip = c.meta; S.imgs = c.imgs;
+    cv.width = c.meta.width; cv.height = c.meta.height;
+    $("msg").textContent = "";
+    play(1);
+  } catch (e) {
+    if (token !== S.loadToken) return;
+    $("msg").textContent = `clip failed — x marks it, → skips (${e.message})`;
+  }
+  render();
+  prefetchAhead();
+}
+
+function play(speed) {
+  if (!S.clip) return;
+  S.speed = speed; S.t0 = performance.now(); S.playing = true;
+  requestAnimationFrame(tick);
+}
+
+function tick(now) {
+  if (!S.playing || !S.clip) return;
+  const j = Math.floor((now - S.t0) / 1000 * S.clip.fps * S.speed);
+  if (j >= S.clip.n - 1) { draw(S.clip.n - 1, true); S.playing = false; return; }
+  draw(j, false);
+  requestAnimationFrame(tick);
+}
+
+function draw(j, ended) {
+  const c = S.clip, im = S.imgs[j];
+  if (!c || !im) return;
+  ctx.drawImage(im, 0, 0, cv.width, cv.height);
+  const b = c.hitter_boxes[j];
+  if (S.showHitter && b) {
+    // A dark outline under a bright line: visible on green, blue, grey and red courts alike.
+    const col = j >= c.contact_index ? "#ff3cff" : "#ffd000", pad = 4;
+    const [x, y, w, h] = [b[0] - pad, b[1] - pad, b[2] - b[0] + 2 * pad, b[3] - b[1] + 2 * pad];
+    ctx.lineWidth = 6; ctx.strokeStyle = "rgba(0,0,0,0.85)"; ctx.strokeRect(x, y, w, h);
+    ctx.lineWidth = 3; ctx.strokeStyle = col; ctx.strokeRect(x, y, w, h);
+    ctx.font = "bold 16px system-ui";
+    const ty = Math.max(18, y - 6);
+    ctx.fillStyle = "rgba(0,0,0,0.7)"; ctx.fillRect(x - 2, ty - 15, 52, 19);
+    ctx.fillStyle = col; ctx.fillText("hitter", x + 2, ty);
+  }
+  // timeline: the contact as a tick, the playhead as a bar
+  const H = 10, y = cv.height - H, w = cv.width;
+  ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(0, y, w, H);
+  ctx.fillStyle = "#ffb000"; ctx.fillRect(0, y, w * (j + 1) / c.n, H);
+  ctx.fillStyle = "#ff4040"; ctx.fillRect(w * c.contact_index / c.n - 2, y - 8, 4, H + 8);
+  if (ended) {
+    ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(w - 250, 10, 240, 30);
+    ctx.fillStyle = "#fff"; ctx.font = "15px system-ui";
+    ctx.fillText(`■ cut ${c.n - 1 - c.contact_index} frames after the hit`, w - 240, 31);
+  }
+}
+
+// --- labelling ------------------------------------------------------------------------------
+function label(value) {
+  const shot = S.queue[S.i];
+  if (!shot) return;
+  const now = performance.now();
+  const item = { id: `${shot.key}@${Date.now()}.${Math.random().toString(36).slice(2, 8)}`,
+                 key: shot.key, label: value, seconds: (now - S.shownAt) / 1000 };
+  S.pending.push(item);
+  mirror();
+  if (value === "clear") delete S.labels[shot.key]; else S.labels[shot.key] = value;
+  if (value !== "clear") S.session.push({ shown: S.shownAt, at: now });
+  flashKey(value);
+  showStatus();
+  flush();
+  if (value === "clear") render(); else show(S.i + 1);
+}
+
+function nextUnlabelled(from) {
+  for (let k = from; k < S.queue.length; k++) if (!(S.queue[k].key in S.labels)) return k;
+  for (let k = 0; k < from; k++) if (!(S.queue[k].key in S.labels)) return k;
+  return from;
+}
+
+function flashKey(value) {
+  const el = document.querySelector(`.k[data-k="${value}"]`);
+  if (!el) return;
+  el.classList.add("flash");
+  setTimeout(() => el.classList.remove("flash"), 250);
+}
+
+function render() {
+  const total = S.queue.length, done = Object.keys(S.labels).length, shot = S.queue[S.i];
+  $("progress").innerHTML = `shot <b>${S.i + 1}</b> / ${total} · labelled <b>${done}</b>`;
+  // Pace, timed from when each shot came up (not from the first key press),
+  // so "last 50" is the plan's acceptance number: under 10:00 passes.
+  const n = S.session.length;
+  let rate = `this session: ${n}`;
+  if (n >= 1) {
+    const mins = (S.session[n - 1].at - S.session[0].shown) / 60000;
+    if (mins > 0) rate += ` · ${(n / mins).toFixed(1)}/min`;
+  }
+  if (n >= 50) {
+    const s = Math.round((S.session[n - 1].at - S.session[n - 50].shown) / 1000);
+    rate += ` · last 50 in ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  }
+  $("rate").textContent = rate;
+  if (shot) {
+    const cur = S.labels[shot.key];
+    $("info").textContent = `${shot.match_id} · rally ${shot.rally_id} · shot ${shot.shot_index}` +
+      `${shot.is_serve ? " (serve)" : ""} · hitter: ${shot.hitter_side} player` +
+      (cur ? ` · labelled ${cur} — press another key to change` : "");
+  }
+  const counts = {};
+  for (const v of Object.values(S.labels)) counts[v] = (counts[v] || 0) + 1;
+  const cur = shot ? S.labels[shot.key] : undefined;
+  $("keys").innerHTML = Object.entries(S.classes).map(([k, name]) =>
+    `<div class="k${cur === k ? " cur" : ""}" data-k="${k}"><kbd>${k}</kbd>${name}<span class="n">${counts[k] || 0}</span></div>`
+  ).join("") + `<div class="k"><kbd>?</kbd>help</div>`;
+}
+
+// Keys by physical position (e.code), so they work whatever the keyboard
+// layout — a Thai layout turns the number row into Thai characters — with
+// the typed character (e.key) as a fallback.
+const CODE_LABEL = { Digit1: "1", Digit2: "2", Digit3: "3", Digit4: "4", Digit5: "5",
+                     Numpad1: "1", Numpad2: "2", Numpad3: "3", Numpad4: "4", Numpad5: "5", KeyX: "x" };
+const MODIFIERS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "AltGraph"]);
+
+window.addEventListener("keydown", e => {
+  if (e.ctrlKey || e.metaKey || e.altKey || MODIFIERS.has(e.key)) return;
+  const help = e.key === "?" || (e.code === "Slash" && e.shiftKey);
+  if (help) { e.preventDefault(); $("help").hidden = !$("help").hidden; return; }
+  if (!$("help").hidden) { $("help").hidden = true; e.preventDefault(); return; }
+  const lab = CODE_LABEL[e.code] || (Object.hasOwn(S.classes, e.key) ? e.key : undefined);
+  if (lab !== undefined) { e.preventDefault(); if (!e.repeat) label(lab); return; }
+  switch (e.code) {
+    case "Space": e.preventDefault(); play(e.shiftKey ? 0.25 : 1); break;
+    case "KeyS": e.preventDefault(); play(0.25); break;
+    case "ArrowRight": case "ArrowDown": e.preventDefault(); navigate(S.i + 1); break;
+    case "ArrowLeft": case "ArrowUp": e.preventDefault(); navigate(S.i - 1); break;
+    case "KeyN": e.preventDefault(); navigate(nextUnlabelled(S.i + 1)); break;
+    case "Backspace": e.preventDefault(); if (S.queue[S.i] && S.queue[S.i].key in S.labels) label("clear"); break;
+    case "KeyH": e.preventDefault(); S.showHitter = !S.showHitter; if (S.clip && !S.playing) draw(S.clip.n - 1, true); break;
+  }
+});
+
+(async function init() {
+  S.pending = loadStored(PENDING);
+  S.rejected = loadStored(REJECTED);
+  try {
+    const s = await api("/api/session");
+    S.queue = s.queue; S.classes = s.classes; adoptLabels(s.labels);
+    document.title = `Shot labeller — ${s.labeler}`;
+    showStatus();
+    if (S.pending.length) flush();
+    render();
+    show(nextUnlabelled(0));
+  } catch (e) {
+    $("msg").textContent = `cannot reach the labeller server: ${e.message}`;
+  }
+})();
+</script>
+</body>
+</html>
