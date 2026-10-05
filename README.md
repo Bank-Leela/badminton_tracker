@@ -389,20 +389,22 @@ A local page (`tools/labeler/index.html`, served by `src/labeler.py` on
 |---|---|
 | `1`-`5` | label the shot (the plan's five outcome classes) and move on |
 | `x` | not a real shot / can't judge (the hit detector was wrong, the clip is broken) |
-| `Space` | replay; `s` or `Shift+Space` replays at ¼ speed |
+| `Space` or `r` | watch the clip again (also the buttons under it); `s` or `Shift+Space` at ¼ speed |
 | `→` `↓` / `←` `↑` | next / previous shot; `n` next unlabelled |
 | `Backspace` | remove this shot's label |
 | `h` | hide / show the players' boxes (hitter yellow, receiver cyan); `?` help |
 
 Keys go by position, so they work on any keyboard layout (Thai included).
 
-Each clip runs from 1.5 s before the contact to **10 frames after it, never
-later**, and stops 2 frames short of the next hit or landing when that comes
-sooner (a quick net reply) — the reply is never shown (`labeler.clip_range`
-enforces it, a test checks it frame by frame) — and never across a camera
-cut. The hitter is
-boxed (yellow, magenta from the hit on); a tick on the bar under the picture
-marks the contact. Frames are JPEGs played on a canvas: exact cut, instant
+Each clip runs from 1.5 s before the contact **until 2 frames before the
+receiver hits the shuttle** — or before it lands, for a shot that ended the
+rally (`labeler.until_next_event`, at most 2.5 s): the whole shot, never the
+reply (`labeler.clip_range` enforces it, a test checks it frame by frame).
+When the next hit isn't known it stops 10 frames after the contact, so a
+reply the hit detection missed never shows. Never across a camera cut. (The
+first version always cut at 10 frames; labels record `tool_version`.) The
+hitter is boxed (yellow, magenta from the hit on), the receiver in cyan; a
+tick on the bar under the picture marks the contact. Frames are JPEGs played on a canvas: exact cut, instant
 replay, slow motion, no codec needed. The next clips are rendered and
 loaded while you watch the current one.
 

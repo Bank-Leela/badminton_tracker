@@ -253,12 +253,15 @@ features:
   early_frames: 10
 
 labeler:
-  # A shot's clip: from before_s before the contact to after_frames after it
-  # (plan: ~10 — the labeller must not see the reply), inside its play span.
+  # A shot's clip: from before_s before the contact until next_event_margin
+  # frames before the receiver hits it (or before it lands, for a shot that
+  # ended the rally), at most max_after_s; inside its play span. You see the
+  # whole shot, never the reply (your call, 2026-10-05; the plan cut at ~10
+  # frames). When the next hit isn't known: after_frames after the contact.
   before_s: 1.5
+  until_next_event: true
+  max_after_s: 2.5
   after_frames: 10
-  # ...and this many frames short of the next contact or landing, when that
-  # comes sooner (fast exchanges): the reply is never shown.
   next_event_margin: 2
   clip_width: 1280            # px; the shuttle is lost below ~1000
   jpeg_quality: 85

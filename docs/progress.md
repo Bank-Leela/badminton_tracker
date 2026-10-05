@@ -26,6 +26,10 @@ Phases 1-7 are on `main` (phase 7 pushed 2026-10-05, `6ee1351`).
 - Game state: **report the score only**; verdict rules stay empty until you set them.
 - After-contact features: **early-flight only** (see the leak below).
 - `is_serve`: **dropped** as an input.
+- Labelling clip: **runs until just before the receiver hits the shuttle** (or
+  before it lands), not 10 frames after the hit — you see the whole shot,
+  never the reply; labels record `tool_version` 2. Both players boxed
+  (receiver in cyan); Watch again / Slow buttons under the clip.
 
 ### What I built and decided
 

@@ -19,6 +19,11 @@
   #msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
          font-size: 18px; color: var(--dim); pointer-events: none; }
   #info { padding: 4px 12px; color: var(--dim); min-height: 22px; }
+  #ctl { display: flex; gap: 8px; justify-content: center; padding: 6px 12px 0; }
+  #ctl button { background: #222; color: var(--fg); border: 1px solid #444; border-radius: 6px;
+                padding: 5px 14px; font: inherit; cursor: pointer; }
+  #ctl button:hover { border-color: var(--accent); }
+  #ctl kbd { font: 700 13px monospace; color: #fff; background: #333; border-radius: 4px; padding: 0 5px; margin-left: 6px; }
   #keys { display: flex; gap: 6px; padding: 6px 12px 10px; flex-wrap: wrap; }
   .k { border: 1px solid #333; border-radius: 6px; padding: 4px 8px; min-width: 120px; }
   .k kbd { font: 700 15px monospace; color: #fff; background: #333; border-radius: 4px; padding: 0 6px; margin-right: 6px; }
@@ -38,6 +43,10 @@
   <span id="save"></span>
 </div>
 <div id="stage"><canvas id="cv" width="1280" height="720"></canvas><div id="msg"></div></div>
+<div id="ctl">
+  <button id="b-again" tabindex="-1">&#8635; Watch again<kbd>Space</kbd></button>
+  <button id="b-slow" tabindex="-1">Slow &frac14;<kbd>S</kbd></button>
+</div>
 <div id="info"></div>
 <div id="keys"></div>
 <div id="help" hidden>
@@ -45,7 +54,7 @@
   <table>
     <tr><td><kbd>1</kbd>–<kbd>5</kbd></td><td>label the shot and move on</td></tr>
     <tr><td><kbd>x</kbd></td><td>not a real shot / can't judge (the hit detector was wrong, the clip is broken)</td></tr>
-    <tr><td><kbd>Space</kbd></td><td>replay</td></tr>
+    <tr><td><kbd>Space</kbd> or <kbd>r</kbd></td><td>watch the clip again (or the buttons under it)</td></tr>
     <tr><td><kbd>s</kbd> or <kbd>Shift</kbd>+<kbd>Space</kbd></td><td>replay slowly (¼ speed)</td></tr>
     <tr><td><kbd>→</kbd> <kbd>↓</kbd> / <kbd>←</kbd> <kbd>↑</kbd></td><td>next / previous shot</td></tr>
     <tr><td><kbd>n</kbd></td><td>next shot without a label</td></tr>
@@ -53,7 +62,8 @@
     <tr><td><kbd>h</kbd></td><td>hide / show the players' boxes</td></tr>
     <tr><td><kbd>?</kbd></td><td>this help</td></tr>
   </table>
-  <p>The clip stops a few frames after the hit on purpose: judge the shot, not the reply.
+  <p>The clip runs until just before the receiver hits the shuttle (or just before it lands, if the
+     rally ended): judge the shot, not the reply. If the next hit isn't known it stops 10 frames after the hit.
      The yellow box marks who hits (magenta from the hit on), the cyan box the receiver; the red tick on the bar under the picture marks the contact. <kbd>h</kbd> hides the boxes.</p>
   <p>Every label is saved to <code>data/labels/shot_labels.csv</code> before it shows as saved.
      If the server is unreachable, labels wait in the browser and are retried.</p>
@@ -248,7 +258,9 @@ function draw(j, ended) {
   if (ended) {
     ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(w - 250, 10, 240, 52);
     ctx.fillStyle = "#fff"; ctx.font = "15px system-ui";
-    ctx.fillText(`■ cut ${c.n - 1 - c.contact_index} frames after the hit`, w - 240, 31);
+    const why = { hit: "■ stopped before the reply", landing: "■ stopped before it lands" }[c.stop]
+      || `■ cut ${c.n - 1 - c.contact_index} frames after the hit`;
+    ctx.fillText(why, w - 240, 31);
     ctx.fillStyle = "#ccc";
     ctx.fillText("Space: watch again · S: slow", w - 240, 53);
   }
@@ -331,6 +343,7 @@ window.addEventListener("keydown", e => {
   switch (e.code) {
     case "Space": e.preventDefault(); play(e.shiftKey ? 0.25 : 1); break;
     case "KeyS": e.preventDefault(); play(0.25); break;
+    case "KeyR": e.preventDefault(); play(1); break;
     case "ArrowRight": case "ArrowDown": e.preventDefault(); navigate(S.i + 1); break;
     case "ArrowLeft": case "ArrowUp": e.preventDefault(); navigate(S.i - 1); break;
     case "KeyN": e.preventDefault(); navigate(nextUnlabelled(S.i + 1)); break;
@@ -338,6 +351,9 @@ window.addEventListener("keydown", e => {
     case "KeyH": e.preventDefault(); S.showBoxes = !S.showBoxes; if (S.clip && !S.playing) draw(S.clip.n - 1, true); break;
   }
 });
+
+$("b-again").onclick = () => play(1);
+$("b-slow").onclick = () => play(0.25);
 
 (async function init() {
   if (location.protocol === "file:") {

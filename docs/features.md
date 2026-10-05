@@ -91,10 +91,13 @@ condition; `flight_time` runs to the next event; `opponent_dist` and
 `opponent_toward` use that landing point; `hitter_recovery_time`'s window
 differs for the rally's last shot. From those columns LightGBM predicted
 whether a shot ended the rally with grouped-CV **AUC 0.99** — the outcome,
-not the quality. The labeller sees the clip only up to 10 frames after the
-contact (`labeler.after_frames`), never the reply. So the `early_*` columns
-measure the same things from what the clip shows, the same way for every
-shot, returned or not. The columns above stay as they were (they describe
+not the quality. The labeller never sees the reply. So the `early_*`
+columns measure the same things from the first 10 frames after the contact
+(`features.early_frames`), the same way for every shot, returned or not.
+(The labelling clip first showed exactly those 10 frames; since tool
+version 2 it runs on to just before the reply or the landing — the model's
+inputs stay at 10 frames, because measuring up to the next event is what
+leaked.) The columns above stay as they were (they describe
 what actually happened; not for phase 7).
 
 | column | meaning |

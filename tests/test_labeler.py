@@ -116,18 +116,24 @@ def test_clip_range_stops_before_a_quick_reply():
     assert clip_range(60, (0, 100), FPS, 1.5, 10, next_event=61) == (15, 61)  # the hit itself always shows
 
 
-def test_quick_replies_are_cut_out_of_rendered_clips(match):
+def test_clips_run_until_just_before_the_reply_or_the_landing(match):
     contacts = [(0, 1, "serve", 30), (0, 2, "hit", 60), (0, 3, "hit", 66), (0, 4, "hit", 95), (0, 5, "landing", 98),
                 (1, 1, "serve", 125), (1, 2, "hit", 160)]
     pd.DataFrame(contacts, columns=["rally_id", "shot_index", "kind", "frame"]).to_csv(match["out"] / "contacts.csv", index=False)
     md = MatchData(match["cfg"], "m")
     queue = {r["key"]: r for r in build_queue(match["cfg"], ["m"])}
     assert [queue[f"m:{f}"]["next_event"] for f in (30, 60, 95, 125, 160)] == [60, 66, 98, 160, None]
-    for f, last in [(30, 40), (60, 63), (95, 95), (125, 135), (160, 170)]:
+    assert [queue[f"m:{f}"]["next_kind"] for f in (30, 60, 95, 125, 160)] == ["hit", "hit", "landing", "hit", None]
+    # Until 2 frames before the next hit or landing (never the reply); 10 frames when there is none known.
+    for f, last, stop in [(30, 57, "hit"), (60, 63, "hit"), (95, 95, "landing"), (125, 157, "hit"), (160, 170, "cut")]:
         clip = render_clip(md, queue[f"m:{f}"], match["cfg"].labeler)
         meta = clip["meta"]
-        assert meta["start_frame"] + meta["n"] - 1 == last
+        assert meta["start_frame"] + meta["n"] - 1 == last and meta["stop"] == stop
         assert frame_shown(clip["frames"][-1]) == last
+    # The old rule (tool version 1) is one config switch away.
+    cfg_l = load_config(overrides=["labeler.until_next_event=false"]).labeler
+    old = render_clip(md, queue["m:30"], cfg_l)["meta"]
+    assert old["start_frame"] + old["n"] - 1 == 40 and old["stop"] == "cut"
 
 
 def test_queue_order(match):
