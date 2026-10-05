@@ -233,7 +233,8 @@ class MatchData:
             raise ValueError(f"frame {frame} is in no play span")
         return int(self.spans[i[0], 0]), int(self.spans[i[0], 1])
 
-    def hitter_box(self, side: str, frame: int):
+    def player_box(self, side: str, frame: int):
+        """The player at `side`'s box at `frame` (source pixels), or None where not found."""
         if side not in self.boxes:
             return None
         f, b = self.boxes[side]
@@ -249,7 +250,8 @@ def render_clip(md: MatchData, shot: dict, cfg_l: Config) -> dict:
     start, end = clip_range(contact, md.span_of(contact), md.fps, float(cfg_l.before_s), int(cfg_l.after_frames),
                             shot.get("next_event"), int(cfg_l.next_event_margin))
     width = int(cfg_l.clip_width)
-    frames, boxes, scale, height = [], [], None, None
+    receiver = {"near": "far", "far": "near"}.get(shot["hitter_side"])
+    frames, boxes, opp_boxes, scale, height = [], [], [], None, None
     for idx, img in iter_frames(md.video, start, end):
         if scale is None:
             scale = width / img.shape[1]
@@ -259,13 +261,17 @@ def render_clip(md: MatchData, shot: dict, cfg_l: Config) -> dict:
         if not ok:
             raise RuntimeError(f"JPEG encode failed at frame {idx}")
         frames.append(jpg.tobytes())
-        box = md.hitter_box(shot["hitter_side"], idx)
-        boxes.append(None if box is None else [round(v * scale, 1) for v in box])
+        # Both players: the hitter, and the receiver (where they stand is half
+        # of "forced into a weak reply" vs "neutral").
+        for out, side in ((boxes, shot["hitter_side"]), (opp_boxes, receiver)):
+            box = md.player_box(side, idx) if side else None
+            out.append(None if box is None else [round(v * scale, 1) for v in box])
     if len(frames) <= contact - start:
         raise RuntimeError(f"video ended before the contact of {shot['key']}")
     return {"frames": frames, "meta": {
         "key": shot["key"], "n": len(frames), "fps": md.fps, "start_frame": start,
-        "contact_index": contact - start, "width": width, "height": height, "hitter_boxes": boxes}}
+        "contact_index": contact - start, "width": width, "height": height,
+        "hitter_boxes": boxes, "receiver_boxes": opp_boxes}}
 
 
 class ClipCache:

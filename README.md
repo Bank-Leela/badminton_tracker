@@ -392,7 +392,7 @@ A local page (`tools/labeler/index.html`, served by `src/labeler.py` on
 | `Space` | replay; `s` or `Shift+Space` replays at ¼ speed |
 | `→` `↓` / `←` `↑` | next / previous shot; `n` next unlabelled |
 | `Backspace` | remove this shot's label |
-| `h` | hide / show the hitter's box; `?` help |
+| `h` | hide / show the players' boxes (hitter yellow, receiver cyan); `?` help |
 
 Keys go by position, so they work on any keyboard layout (Thai included).
 

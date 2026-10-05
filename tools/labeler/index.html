@@ -50,11 +50,11 @@
     <tr><td><kbd>→</kbd> <kbd>↓</kbd> / <kbd>←</kbd> <kbd>↑</kbd></td><td>next / previous shot</td></tr>
     <tr><td><kbd>n</kbd></td><td>next shot without a label</td></tr>
     <tr><td><kbd>Backspace</kbd></td><td>remove this shot's label</td></tr>
-    <tr><td><kbd>h</kbd></td><td>hide / show the hitter's box</td></tr>
+    <tr><td><kbd>h</kbd></td><td>hide / show the players' boxes</td></tr>
     <tr><td><kbd>?</kbd></td><td>this help</td></tr>
   </table>
   <p>The clip stops a few frames after the hit on purpose: judge the shot, not the reply.
-     The yellow box marks who hits (magenta from the hit on); the red tick on the bar under the picture marks the contact.</p>
+     The yellow box marks who hits (magenta from the hit on), the cyan box the receiver; the red tick on the bar under the picture marks the contact. <kbd>h</kbd> hides the boxes.</p>
   <p>Every label is saved to <code>data/labels/shot_labels.csv</code> before it shows as saved.
      If the server is unreachable, labels wait in the browser and are retried.</p>
 </div>
@@ -62,7 +62,7 @@
 "use strict";
 const S = {
   queue: [], labels: {}, classes: {}, i: 0, clip: null, imgs: [], loadToken: 0,
-  playing: false, speed: 1, t0: 0, showHitter: true, shownAt: 0,
+  playing: false, speed: 1, t0: 0, showBoxes: true, shownAt: 0,
   session: [],            // {shown, at} (ms) of each label made this session
   pre: new Map(),         // key -> Promise<{meta, imgs}>
   pending: [],            // labels not yet confirmed saved: the source of truth...
@@ -218,21 +218,27 @@ function tick(now) {
   requestAnimationFrame(tick);
 }
 
+// A dark outline under a bright line: visible on green, blue, grey and red courts alike.
+function playerBox(b, col, name) {
+  if (!b) return;
+  const pad = 4;
+  const [x, y, w, h] = [b[0] - pad, b[1] - pad, b[2] - b[0] + 2 * pad, b[3] - b[1] + 2 * pad];
+  ctx.lineWidth = 6; ctx.strokeStyle = "rgba(0,0,0,0.85)"; ctx.strokeRect(x, y, w, h);
+  ctx.lineWidth = 3; ctx.strokeStyle = col; ctx.strokeRect(x, y, w, h);
+  ctx.font = "bold 16px system-ui";
+  const ty = Math.max(18, y - 6), tw = ctx.measureText(name).width + 8;
+  ctx.fillStyle = "rgba(0,0,0,0.7)"; ctx.fillRect(x - 2, ty - 15, tw, 19);
+  ctx.fillStyle = col; ctx.fillText(name, x + 2, ty);
+}
+
 function draw(j, ended) {
   const c = S.clip, im = S.imgs[j];
   if (!c || !im) return;
   ctx.drawImage(im, 0, 0, cv.width, cv.height);
-  const b = c.hitter_boxes[j];
-  if (S.showHitter && b) {
-    // A dark outline under a bright line: visible on green, blue, grey and red courts alike.
-    const col = j >= c.contact_index ? "#ff3cff" : "#ffd000", pad = 4;
-    const [x, y, w, h] = [b[0] - pad, b[1] - pad, b[2] - b[0] + 2 * pad, b[3] - b[1] + 2 * pad];
-    ctx.lineWidth = 6; ctx.strokeStyle = "rgba(0,0,0,0.85)"; ctx.strokeRect(x, y, w, h);
-    ctx.lineWidth = 3; ctx.strokeStyle = col; ctx.strokeRect(x, y, w, h);
-    ctx.font = "bold 16px system-ui";
-    const ty = Math.max(18, y - 6);
-    ctx.fillStyle = "rgba(0,0,0,0.7)"; ctx.fillRect(x - 2, ty - 15, 52, 19);
-    ctx.fillStyle = col; ctx.fillText("hitter", x + 2, ty);
+  if (S.showBoxes) {
+    // The receiver (cyan), then the hitter (yellow, magenta from the hit on) on top.
+    playerBox((c.receiver_boxes || [])[j], "#33d6ff", "receiver");
+    playerBox(c.hitter_boxes[j], j >= c.contact_index ? "#ff3cff" : "#ffd000", "hitter");
   }
   // timeline: the contact as a tick, the playhead as a bar
   const H = 10, y = cv.height - H, w = cv.width;
@@ -327,7 +333,7 @@ window.addEventListener("keydown", e => {
     case "ArrowLeft": case "ArrowUp": e.preventDefault(); navigate(S.i - 1); break;
     case "KeyN": e.preventDefault(); navigate(nextUnlabelled(S.i + 1)); break;
     case "Backspace": e.preventDefault(); if (S.queue[S.i] && S.queue[S.i].key in S.labels) label("clear"); break;
-    case "KeyH": e.preventDefault(); S.showHitter = !S.showHitter; if (S.clip && !S.playing) draw(S.clip.n - 1, true); break;
+    case "KeyH": e.preventDefault(); S.showBoxes = !S.showBoxes; if (S.clip && !S.playing) draw(S.clip.n - 1, true); break;
   }
 });
 

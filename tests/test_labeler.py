@@ -26,6 +26,7 @@ from labeler import (
 
 FPS, W, H, N = 30.0, 640, 360, 200
 SPANS = [(0, 100, 1), (100, 120, 0), (120, 200, 1)]  # play, a cut away, play
+BOX = {"near": [100.0, 50.0, 160.0, 250.0], "far": [300.0, 40.0, 340.0, 120.0]}  # both players, apart
 SHOTS = [(0, 1, 30, "near"), (0, 2, 60, "far"), (0, 3, 95, "near"), (1, 1, 125, "far"), (1, 2, 160, "near")]
 
 
@@ -51,7 +52,7 @@ def match(tmp_path):
                  columns=["segment_id", "start_frame", "end_frame", "is_play"]).to_csv(out / "view_segments.csv", index=False)
     pd.DataFrame([{"match_id": "m", "rally_id": r, "shot_index": s, "frame": f, "hitter_id": int(side == "far"),
                    "hitter_side": side, "is_serve": int(s == 1)} for r, s, f, side in SHOTS]).to_csv(out / "shots.csv", index=False)
-    rows = [{"frame": f, "side": side, "x1": 100.0, "y1": 50.0, "x2": 160.0, "y2": 250.0}
+    rows = [{"frame": f, "side": side, **dict(zip(("x1", "y1", "x2", "y2"), BOX[side]))}
             for f in range(N) for side in ("near", "far")]
     pq.write_table(pa.Table.from_pandas(pd.DataFrame(rows)), out / "players.parquet")
     return {"cfg": cfg, "video": video, "out": out}
@@ -84,7 +85,8 @@ def test_rendered_clips_show_exactly_the_right_frames(match):
         assert shown == [a, f, b - 1]
         # Never the reply: nothing past contact + after_frames.
         assert meta["start_frame"] + meta["n"] - 1 <= f + 10
-        assert meta["hitter_boxes"][0] == [100.0, 50.0, 160.0, 250.0]
+        receiver = "far" if side == "near" else "near"
+        assert meta["hitter_boxes"][0] == BOX[side] and meta["receiver_boxes"][0] == BOX[receiver]
 
 
 def test_label_store_latest_wins_and_survives_a_torn_line(tmp_path):
