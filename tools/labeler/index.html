@@ -62,9 +62,10 @@
     <tr><td><kbd>h</kbd></td><td>hide / show the players' boxes</td></tr>
     <tr><td><kbd>?</kbd></td><td>this help</td></tr>
   </table>
-  <p>The clip runs until just before the receiver hits the shuttle (or just before it lands, if the
-     rally ended): judge the shot, not the reply. If the next hit isn't known it stops 10 frames after the hit.
-     The yellow box marks who hits (magenta from the hit on), the cyan box the receiver; the red tick on the bar under the picture marks the contact. <kbd>h</kbd> hides the boxes.</p>
+  <p>The clip runs on through the receiver's reply and its flight, until just before your next hit (or the
+     landing); a shot that ended the rally stops just before it lands. If the next hit isn't known it stops
+     10 frames after the hit. On the bar under the picture: red tick = this shot, cyan tick = the reply.
+     The yellow box marks who hits (magenta from the hit on), the cyan box the receiver. <kbd>h</kbd> hides the boxes.</p>
   <p>Every label is saved to <code>data/labels/shot_labels.csv</code> before it shows as saved.
      If the server is unreachable, labels wait in the browser and are retried.</p>
 </div>
@@ -255,10 +256,14 @@ function draw(j, ended) {
   ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(0, y, w, H);
   ctx.fillStyle = "#ffb000"; ctx.fillRect(0, y, w * (j + 1) / c.n, H);
   ctx.fillStyle = "#ff4040"; ctx.fillRect(w * c.contact_index / c.n - 2, y - 8, 4, H + 8);
+  if (c.reply_index != null) {                      // the receiver's reply
+    ctx.fillStyle = "#33d6ff"; ctx.fillRect(w * c.reply_index / c.n - 2, y - 8, 4, H + 8);
+  }
   if (ended) {
     ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(w - 250, 10, 240, 52);
     ctx.fillStyle = "#fff"; ctx.font = "15px system-ui";
-    const why = { hit: "■ stopped before the reply", landing: "■ stopped before it lands" }[c.stop]
+    const why = { reply: "■ through the reply", hit: "■ stopped before the reply",
+                  landing: "■ stopped before it lands" }[c.stop]
       || `■ cut ${c.n - 1 - c.contact_index} frames after the hit`;
     ctx.fillText(why, w - 240, 31);
     ctx.fillStyle = "#ccc";

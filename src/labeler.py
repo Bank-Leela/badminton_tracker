@@ -5,13 +5,15 @@ needs: the queue of shots, each shot's clip as JPEG frames, and a place to
 save labels. The page is keyboard-only (1-5 label, x not-a-shot, space
 replay, arrows navigate); see the page for the keys.
 
-Clips. From `before_s` before the contact until just before the receiver
-hits the shuttle — or just before it lands, for a shot that ended the rally
-(`until_next_event`; at most `max_after_s`). Never the reply itself: the
-labeller judges the shot, not its outcome (`clip_range` asserts it). When
-the next hit isn't known, `after_frames` (10) — a reply the hit detection
-missed must not come into view. Never across a camera cut: the clip stays
-inside the play span. (Tool version 1 always cut at `after_frames`.) Frames are
+Clips. From `before_s` before the contact, through the receiver's reply and
+its flight, until just before the event after it — the hitter's next hit or
+the landing (`show_reply`; at most `reply_max_s` after the reply,
+`max_after_s` after the contact). A shot that ended the rally has no reply:
+its clip stops just before it lands. When the next event isn't known,
+`after_frames` (10) — a hit the detection missed must not come into view.
+`clip_range` asserts the clip never runs into the event it stops before.
+Never across a camera cut: the clip stays inside the play span. (Tool
+version 1 cut at `after_frames`; 2 stopped just before the reply.) Frames are
 sent as JPEGs and played on a canvas — exact frames, instant replay, slow
 motion, and no codec (this OpenCV writes no browser-playable H.264). Clips
 are rendered on demand and the page asks for the next few ahead of time.
@@ -45,7 +47,7 @@ import pandas as pd
 
 from config import REPO_ROOT, Config, cache_dir
 
-TOOL_VERSION = 2  # 2: clips run until just before the reply (or the landing), not 10 frames
+TOOL_VERSION = 3  # 2: clips run until just before the reply (or landing); 3: through the reply
 CLASSES = {
     "1": "Outright winner or opponent error",
     "2": "Opponent forced into a weak reply",
@@ -158,6 +160,7 @@ def build_queue(cfg: Config, matches: list[str] | None = None, order: str = "ran
     nxt = [next_events.get((m, int(f))) for m, f in zip(df["match_id"], df["frame"])]
     df["next_event"] = [n[0] if n else None for n in nxt]
     df["next_kind"] = [n[1] if n else None for n in nxt]
+    df["after_reply"] = [n[2] if n else None for n in nxt]
     if order == "random":
         df = df.iloc[np.random.default_rng(seed).permutation(len(df))]
     elif order == "rally":
@@ -171,13 +174,15 @@ def build_queue(cfg: Config, matches: list[str] | None = None, order: str = "ran
                     "hitter_id": None if pd.isna(r.hitter_id) else int(r.hitter_id),
                     "hitter_side": r.hitter_side, "is_serve": int(r.is_serve),
                     "next_event": None if r.next_event is None or pd.isna(r.next_event) else int(r.next_event),
-                    "next_kind": r.next_kind if isinstance(r.next_kind, str) else None})
+                    "next_kind": r.next_kind if isinstance(r.next_kind, str) else None,
+                    "after_reply": None if r.after_reply is None or pd.isna(r.after_reply) else int(r.after_reply)})
     return out
 
 
-def _next_events(cache: Path, ids: list[str]) -> dict[tuple[str, int], tuple[int, str]]:
-    """`(match_id, hit frame) -> (frame, kind)` of the rally's next event — the reply ('hit')
-    or the landing ('landing') — from `contacts.csv`."""
+def _next_events(cache: Path, ids: list[str]) -> dict[tuple[str, int], tuple[int, str, int | None]]:
+    """`(match_id, hit frame) -> (frame, kind, after)`: the rally's next event — the reply
+    ('hit') or the landing ('landing') — and the frame of the event after it (the hitter's
+    next hit, or the landing; None if unknown), from `contacts.csv`."""
     out = {}
     for m in ids:
         f = cache / m / "contacts.csv"
@@ -186,9 +191,10 @@ def _next_events(cache: Path, ids: list[str]) -> dict[tuple[str, int], tuple[int
         c = pd.read_csv(f, usecols=["rally_id", "kind", "frame"]).sort_values(["rally_id", "frame"])
         for _, g in c.groupby("rally_id"):
             fr, kinds = g["frame"].to_numpy(), g["kind"].to_numpy()
-            for a, b, k, kb in zip(fr[:-1], fr[1:], kinds[:-1], kinds[1:]):
-                if k != "landing":
-                    out[(m, int(a))] = (int(b), "landing" if kb == "landing" else "hit")
+            for i in range(len(fr) - 1):
+                if kinds[i] != "landing":
+                    after = int(fr[i + 2]) if i + 2 < len(fr) else None
+                    out[(m, int(fr[i]))] = (int(fr[i + 1]), "landing" if kinds[i + 1] == "landing" else "hit", after)
     return out
 
 
@@ -255,17 +261,27 @@ def render_clip(md: MatchData, shot: dict, cfg_l: Config) -> dict:
     from video import iter_frames
 
     contact = int(shot["frame"])
-    # Until just before the receiver hits it (or it lands) when that is known
-    # (`until_next_event`, at most `max_after_s`); otherwise `after_frames` —
-    # a reply the hit detection missed must not come into view.
-    nxt = shot.get("next_event")
-    after = int(cfg_l.after_frames)
-    if cfg_l.get("until_next_event") and nxt is not None:
+    nxt, kind = shot.get("next_event"), shot.get("next_kind")
+    margin = int(cfg_l.next_event_margin)
+    after, until, reply = int(cfg_l.after_frames), nxt, None
+    if nxt is not None and cfg_l.get("show_reply") and kind == "hit":
+        # Through the receiver's reply and its flight: until just before the event
+        # after it (the hitter's next hit, or the landing), at most `reply_max_s`
+        # after the reply.
+        reply = int(nxt)
+        until = shot.get("after_reply")
+        after = min(int(round(float(cfg_l.max_after_s) * md.fps)),
+                    reply - contact + int(round(float(cfg_l.reply_max_s) * md.fps)))
+    elif nxt is not None and cfg_l.get("until_next_event"):
+        # Until just before the receiver hits it (or it lands).
         after = int(round(float(cfg_l.max_after_s) * md.fps))
-    start, end = clip_range(contact, md.span_of(contact), md.fps, float(cfg_l.before_s), after,
-                            nxt, int(cfg_l.next_event_margin))
-    if nxt is not None and end >= nxt - int(cfg_l.next_event_margin):
-        stop = shot.get("next_kind") or "hit"     # stopped just before the reply ('hit') or the landing
+    # Otherwise (the next event unknown) `after_frames`: a hit the detection
+    # missed must not come into view.
+    start, end = clip_range(contact, md.span_of(contact), md.fps, float(cfg_l.before_s), after, until, margin)
+    if reply is not None and end > reply:
+        stop = "reply"                            # the reply was shown
+    elif nxt is not None and end >= nxt - margin:
+        stop = kind or "hit"                      # stopped just before the reply ('hit') or the landing
     else:
         stop = "cut"
     width = int(cfg_l.clip_width)
@@ -290,6 +306,7 @@ def render_clip(md: MatchData, shot: dict, cfg_l: Config) -> dict:
     return {"frames": frames, "meta": {
         "key": shot["key"], "n": len(frames), "fps": md.fps, "start_frame": start,
         "contact_index": contact - start, "width": width, "height": height, "stop": stop,
+        "reply_index": None if reply is None or reply >= end else reply - start,
         "hitter_boxes": boxes, "receiver_boxes": opp_boxes}}
 
 

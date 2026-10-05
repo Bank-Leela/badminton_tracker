@@ -95,9 +95,8 @@ not the quality. The labeller never sees the reply. So the `early_*`
 columns measure the same things from the first 10 frames after the contact
 (`features.early_frames`), the same way for every shot, returned or not.
 (The labelling clip first showed exactly those 10 frames; since tool
-version 2 it runs on to just before the reply or the landing — the model's
-inputs stay at 10 frames, because measuring up to the next event is what
-leaked.) The columns above stay as they were (they describe
+version 3 it runs on through the reply — the model's inputs stay at 10
+frames, because measuring up to the next event is what leaked.) The columns above stay as they were (they describe
 what actually happened; not for phase 7).
 
 | column | meaning |

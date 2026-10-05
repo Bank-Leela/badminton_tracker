@@ -396,15 +396,17 @@ A local page (`tools/labeler/index.html`, served by `src/labeler.py` on
 
 Keys go by position, so they work on any keyboard layout (Thai included).
 
-Each clip runs from 1.5 s before the contact **until 2 frames before the
-receiver hits the shuttle** — or before it lands, for a shot that ended the
-rally (`labeler.until_next_event`, at most 2.5 s): the whole shot, never the
-reply (`labeler.clip_range` enforces it, a test checks it frame by frame).
-When the next hit isn't known it stops 10 frames after the contact, so a
-reply the hit detection missed never shows. Never across a camera cut. (The
-first version always cut at 10 frames; labels record `tool_version`.) The
-hitter is boxed (yellow, magenta from the hit on), the receiver in cyan; a
-tick on the bar under the picture marks the contact. Frames are JPEGs played on a canvas: exact cut, instant
+Each clip runs from 1.5 s before the contact **through the receiver's
+reply and its flight**, stopping 2 frames before the event after it — the
+hitter's next hit, or the landing (`labeler.show_reply`; at most 1.5 s after
+the reply). A shot that ended the rally has no reply: its clip stops just
+before it lands. When the next event isn't known it stops 10 frames after
+the contact, so a hit the detection missed never shows
+(`labeler.clip_range` enforces the stop, a test checks it frame by frame).
+Never across a camera cut. (Version 1 cut at 10 frames, version 2 just
+before the reply; labels record `tool_version`.) The hitter is boxed
+(yellow, magenta from the hit on), the receiver in cyan; on the bar under
+the picture a red tick marks the shot, a cyan tick the reply. Frames are JPEGs played on a canvas: exact cut, instant
 replay, slow motion, no codec needed. The next clips are rendered and
 loaded while you watch the current one.
 
