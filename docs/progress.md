@@ -13,8 +13,7 @@ Last updated 2026-10-05 (phase 6 built overnight). Picks up from `badminton-anal
 | 5 — Hits, 3D, shots.csv | yes (`contacts`, `camera`, `flight`, `features`, `review`) | **all 32 run**, 30,266 shots; my own 20-shot pass 17/20 contacts clearly right — **your 20-shot check waiting** (`review/`) |
 | 6 — Labelling tool | yes (`bda label`, `src/labeler.py`, `tools/labeler/`) | works end to end in the browser, keyboard only; reviewed, 9 problems fixed; **your 50-in-10-minutes check waiting** |
 
-Phases 1-5 are on `main` (phase 5 pushed 2026-10-05, `abb4fdf`). Phase 6 is
-committed on the local branch `phase6-labeler`, not merged or pushed.
+Phases 1-6 are on `main` (phase 6 pushed 2026-10-05, `b3a8ad6`).
 
 ## Phase 6 — the labelling tool (built overnight 2026-10-04 → 05, on my own)
 
