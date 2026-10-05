@@ -246,9 +246,11 @@ function draw(j, ended) {
   ctx.fillStyle = "#ffb000"; ctx.fillRect(0, y, w * (j + 1) / c.n, H);
   ctx.fillStyle = "#ff4040"; ctx.fillRect(w * c.contact_index / c.n - 2, y - 8, 4, H + 8);
   if (ended) {
-    ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(w - 250, 10, 240, 30);
+    ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(w - 250, 10, 240, 52);
     ctx.fillStyle = "#fff"; ctx.font = "15px system-ui";
     ctx.fillText(`■ cut ${c.n - 1 - c.contact_index} frames after the hit`, w - 240, 31);
+    ctx.fillStyle = "#ccc";
+    ctx.fillText("Space: watch again · S: slow", w - 240, 53);
   }
 }
 
@@ -338,6 +340,12 @@ window.addEventListener("keydown", e => {
 });
 
 (async function init() {
+  if (location.protocol === "file:") {
+    // Opened straight from the folder: the clips and the saving need the server.
+    $("msg").textContent = "This page runs through the labelling server. Start it (bda label), " +
+      "then open http://127.0.0.1:8765/ — not this file.";
+    return;
+  }
   S.pending = loadStored(PENDING);
   S.rejected = loadStored(REJECTED);
   try {
