@@ -14,8 +14,7 @@ Last updated 2026-10-05 (phase 7 built). Picks up from `badminton-analysis-plan.
 | 6 — Labelling tool | yes (`bda label`, `src/labeler.py`, `tools/labeler/`) | works end to end in the browser, keyboard only; reviewed, 9 problems fixed; **your 50-in-10-minutes check waiting** |
 | 7 — Quality model | yes (`bda outcomes`, `bda quality`, `src/outcomes.py`, `src/quality.py`; early-flight features in phase 5) | pipeline runs on the free baseline labels; two review rounds, all confirmed problems fixed; **needs your hand labels** (200+, ideally ~1000) |
 
-Phases 1-6 are on `main` (phase 6 pushed 2026-10-05, `b3a8ad6`). Phase 7 is
-committed on the local branch `phase7-quality`, not merged or pushed.
+Phases 1-7 are on `main` (phase 7 pushed 2026-10-05, `6ee1351`).
 
 ## Phase 7 — the quality model (2026-10-05)
 
