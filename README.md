@@ -86,6 +86,11 @@ Outputs land in `data/cache/<match_id>/`:
 | `players.parquet` | the two players: `frame, player_id, side, court_x, court_y, speed, keypoints[17][3]`, box, feet |
 | `players.meta.json` | found rate per side, changes of ends, rally speed percentiles, speed violations |
 | `players_overlay.mp4` | boxes, skeletons, ids, speeds and a top-down court map — the phase 4 eyeball check |
+| `contacts.csv` | `rally_id, shot_index, kind (serve/first/hit/landing), frame, player_id, side, x, y` (contact pixel), reach, gap |
+| `camera.json` / `camera_check.png` | focal length, per-span pose; net tape, posts and a 1.8 m figure drawn back on the court |
+| `repeats.npz` | repeated (duplicate) frames over the rallies, for `FrameClock` |
+| `shots.csv` | one row per hit: the features of `docs/features.md` — **the interface to everything downstream** |
+| `review/` | phase 5 acceptance sheets and `review.csv` |
 
 Every stage caches and skips work when its output exists. `--force`
 recomputes. Exceptions to "exists means reuse": `segments.csv` is redone
@@ -134,6 +139,11 @@ src/shuttle.py   TrackNetV3 wrapper — the only module that imports external/
 src/segment.py   play view by court-line template, rally boundaries from the trajectory
 src/court.py     court model, line detection, image -> court homography, manual fallback
 src/players.py   YOLO-pose + ByteTrack, the two players, identity across ends, speed check
+src/contacts.py  hit moments: shuttle-track breaks + wrist reach, alternation, serve, landing
+src/camera.py    full camera from the homography and the net tape
+src/flight.py    a shot's 3D flight (gravity + drag) fitted to its image track
+src/features.py  shots.csv: the per-shot features of docs/features.md
+src/review.py    acceptance sheets: random shots against the video
 ```
 
 `src/` is a flat module layout (`import shuttle`, not `import src.shuttle`),
@@ -305,6 +315,54 @@ bda players-overlay --video data/raw/<id>.mp4 --match-id <id> --start <frame> --
 Each player keeps one colour box and id all the way through; the red cross
 sits between their feet; the dots on the map move like the players do.
 
+## Phase 5 — hits, 3D flights, `shots.csv`
+
+`bda shots --match-id <id>` runs three stages; the features themselves are
+in `docs/features.md`.
+
+**Hits** (`contacts.py` → `contacts.csv`). Each rally's shuttle track is cut
+into the fewest smooth pieces (a cubic in time for x and y) that fit it — an
+optimal partition, so a break needs real evidence. A break where the shuttle
+is within racket reach of a wrist (0.75 body heights) is a candidate hit;
+across a gap, the hit is where the neighbouring pieces' curves meet. Hits
+alternate near/far (a Viterbi pass over the rally). The serve is the first
+hit with both players placed for it — in the service courts, nearly still,
+diagonal — and the shuttle seen in the server's hand just before; anything
+earlier is the shuttle being tapped back. A flight that ends at rest is the
+landing. On hand-labelled rallies (World Champs 2025 rallies 10, 40, 70;
+World Champs 2019 rally 20) every hit was found within 1-3 frames.
+
+**Camera** (`camera.py` → `camera.json`, `camera_check.png`). The court
+homography leaves the focal length undetermined for a camera looking down
+the court, so the net supplies it: the focal length whose projected tape
+(1.55 m at the posts, 1.524 m in the middle) lands on white, court lines
+erased first. Where several fit, the one where near and far players'
+standing head heights agree wins. All 32 cameras: 20-38 m behind the court,
+5-13 m up; standing nose height 1.34-1.52 m near, 1.24-1.41 m far.
+
+**Flights and features** (`flight.py`, `features.py` → `shots.csv`). Each
+shot's flight is fitted in 3D through the camera — six numbers, launch point
+and velocity, under gravity and drag (terminal velocity 6.8 m/s) — to the
+shuttle's image track, pinned at the contact pixel near the hitter and at
+the next contact near the receiver (or the floor). Speed off the racket is
+kept only when the track saw the first 0.2 s (drag takes most of it after
+that); net clearance only when it saw both sides of the crossing. The
+2025-26 "30 fps" broadcasts repeat every 6th frame (25 fps content): times
+are counted in unique frames (`video.FrameClock`). Invariants: shuttle under
+500 km/h, positions within the court + 2 m — breaking values are blanked,
+more than 15% of a match's shots is an error.
+
+## Phase 5 acceptance check
+
+```bash
+bda shots-review --video data/raw/<id>.mp4 --match-id <id> --n 20
+```
+
+writes `data/cache/<id>/review/`: per shot, five frames around the detected
+contact (the contact outlined in red), the frame where the shot ends with the
+landing point drawn on the court, and a top-down map; fill in
+`review.csv` (`contact_ok`, `landing_ok`).
+
 ## Tests
 
 ```bash
@@ -319,5 +377,8 @@ from a known homography with clutter and moving players, whose camera is
 bumped mid-match, for the court fit. Phase 4's run a stand-in for the pose
 network over a rendered match — two players who change ends, plus an umpire
 — through detection, tracking, selection and identity; and feed the
-movement check jumps, sprints, swaps and flicker. Tests that need the
+movement check jumps, sprints, swaps and flicker. Phase 5's cut synthetic
+shuttle tracks at known hits, play a whole rally (held serve, five hits, a
+landing) past stand-in players, recover a focal length from a rendered net,
+and fit 3D flights filmed by a known camera. Tests that need the
 TrackNet checkpoint or checkout skip when it is absent.

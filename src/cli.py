@@ -10,6 +10,8 @@
     bda court-click --video data/raw/match.mp4 --match-id msia_open_f
     bda players --video data/raw/match.mp4 --match-id msia_open_f   # after `court`
     bda players-overlay --video data/raw/match.mp4 --match-id msia_open_f --start 30000 --seconds 30
+    bda shots   --match-id msia_open_f                               # after `players`
+    bda shots-review --video data/raw/match.mp4 --match-id msia_open_f --n 20
 """
 
 from __future__ import annotations
@@ -210,6 +212,27 @@ def cmd_players_overlay(args) -> int:
     return 0
 
 
+def cmd_shots(args) -> int:
+    """Phase 5: hits, the camera, each shot's flight, `shots.csv`."""
+    from camera import solve_camera
+    from contacts import detect_contacts
+    from features import shot_features
+
+    cfg = load_config(args.config, args.overrides)
+    detect_contacts(cfg, args.match_id, force=args.force)
+    solve_camera(cfg, args.match_id, force=args.force)
+    shot_features(cfg, args.match_id)
+    return 0
+
+
+def cmd_shots_review(args) -> int:
+    from review import write_shot_review
+
+    cfg = load_config(args.config, args.overrides)
+    write_shot_review(cfg, args.match_id, args.video, n=args.n, seed=args.seed)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bda", description="badminton match analysis")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -284,6 +307,20 @@ def main(argv: list[str] | None = None) -> int:
     _add_range(p_pover)
     _add_common(p_pover)
     p_pover.set_defaults(func=cmd_players_overlay)
+
+    p_shots = sub.add_parser("shots", help="hits, camera, 3D flights and shots.csv (needs `players`)")
+    p_shots.add_argument("--match-id", required=True)
+    p_shots.add_argument("--force", action="store_true", help="redo contacts and the camera even if cached")
+    _add_common(p_shots)
+    p_shots.set_defaults(func=cmd_shots)
+
+    p_review = sub.add_parser("shots-review", help="sheets of random shots to check against the video")
+    p_review.add_argument("--video", required=True)
+    p_review.add_argument("--match-id", required=True)
+    p_review.add_argument("--n", type=int, default=20)
+    p_review.add_argument("--seed", type=int, default=0)
+    _add_common(p_review)
+    p_review.set_defaults(func=cmd_shots_review)
 
     args = parser.parse_args(argv)
     return args.func(args)

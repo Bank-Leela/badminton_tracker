@@ -169,3 +169,79 @@ players:
   # breaks taken for rallies, 11).
   blank_s: 0.2
   max_violations: 5
+
+contacts:
+  # Pixel sizes are at 1080p and scale with the source height.
+  top_px: 30                  # shuttle points this near the top edge: leaving the frame
+  jump_px: 60                 # px/frame: a lone point this far from both neighbours is false
+  # Track pieces: fewest smooth (cubic-in-time) flights that fit the shuttle;
+  # this many px² of fit error buys one more piece.
+  break_penalty_px2: 2000
+  min_points: 4
+  max_piece_s: 4.0
+  # A break is a hit only if the shuttle is within this many body heights of
+  # a wrist (racket and arm: ~0.5 at full stretch).
+  reach: 0.75
+  # Not a flight: slower than this (mean px/frame; rolling, on the floor —
+  # 2.5 typical), or within hold_reach body heights of one player's wrist for
+  # hold_frac of the piece (a server walking to the line with it).
+  rest_px_per_frame: 4.0
+  hold_reach: 0.2
+  hold_frac: 0.8
+  hold_px_per_frame: 10.0      # ...and slower than this: flights faster are never "held"
+  # The serve: the first hit made with both players placed for it — in the
+  # service courts (depth from the net, m), nearly still serve_still_s
+  # before, diagonally opposite (unless one is within centre_line_m of the
+  # centre line). Earlier hits are the shuttle being tapped back to the server.
+  service_depth_m: [1.5, 6.0]
+  serve_still_s: 0.6           # before the stroke: the serve itself steps in
+  serve_still_mps: 2.0
+  serve_hold_s: 0.3            # ...with the shuttle seen at the server's hand this long before
+  centre_line_m: 0.25
+  min_gap_s: 0.2              # hits closer than this are one hit (plan: never within 0.1 s)
+  max_shots: 60               # plan: a rally has 1-60 shots
+
+camera:
+  # Focal lengths tried (px at 1080p) and camera heights accepted (m).
+  focal_px: [600, 9000]
+  height_m: [3.0, 15.0]
+  # Mean white along the projected net tape (0-1) the best focal length
+  # must reach; real fits scored 0.44-1.0 on the 32 matches, a miss ~0.03.
+  min_tape_score: 0.3
+  # Several focal lengths can fit the tape (another white line). Among peaks
+  # scoring at least peak_ratio of the best, the one where the near and far
+  # players' standing head heights agree wins; they must agree within this.
+  peak_ratio: 0.6
+  max_head_mismatch_m: 0.3
+
+flight:
+  # Feather shuttle terminal velocity (m/s): sets the drag (g / v_term²).
+  v_term_mps: 6.8
+  # The anchors (contact pixels) count this many times a track point.
+  anchor_weight: 3.0
+  # The speed off the racket is reported only with at least min_early_obs
+  # track points in the first early_s after the hit (drag takes most of it
+  # within ~0.2 s; extrapolated, it swung 69-205 km/h with the drag
+  # setting); the net clearance only with points within net_window_s on
+  # both sides of the crossing.
+  early_s: 0.2
+  min_early_obs: 3
+  net_window_s: 0.3
+
+features:
+  # The plan's invariants: shuttle under this speed; every court position
+  # within the doubles court plus this margin. Values breaking them are
+  # blanked; more than max_blanked_frac of a match's shots is systematic.
+  max_shuttle_kmh: 500
+  court_margin_m: 2.0
+  max_blanked_frac: 0.15
+  # A flight fit worse than this (px RMS, at 1080p) is not used (its 3D
+  # values are left empty; counted, not an invariant breach).
+  max_fit_rms_px: 20.0
+  # Recovery: back within this of the player's base (their median position
+  # when the opponent hits).
+  recovery_radius_m: 1.0
+  # No shot flies longer (a high serve or clear: ~1.5-2 s). A longer gap to
+  # the next event holds a hit the contact detection missed: the flight's
+  # features are left empty.
+  max_flight_s: 2.2

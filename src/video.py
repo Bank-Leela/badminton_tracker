@@ -166,6 +166,51 @@ def read_frames(
     return np.stack(frames), start_frame
 
 
+def repeated_frames(path: str | Path, spans, threshold: float = 0.05) -> np.ndarray:
+    """Frame indices, within `spans` (`[(start, end), ...)`), that repeat the frame before.
+
+    The 2025-26 broadcasts are 25 fps content at 30 fps: every 6th frame is
+    an exact copy (mean absolute difference 0.0 against 0.2-0.8 otherwise).
+    Counting a copy as 1/30 s of motion puts a fast shuttle ~1 m out, so
+    time-sensitive stages measure time in unique frames (`FrameClock`).
+    """
+    out = []
+    for a, b in spans:
+        prev = None
+        for idx, frame in iter_frames(path, int(a), int(b)):
+            g = cv2.cvtColor(cv2.resize(frame, (192, 108), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+            g = g.astype(np.int16)
+            if prev is not None and np.abs(g - prev).mean() < threshold:
+                out.append(idx)
+            prev = g
+    return np.array(out, dtype=np.int64)
+
+
+class FrameClock:
+    """Seconds between frames of one span, counting a repeated frame as no time.
+
+    `source_fps` is the content's own rate: 25 for 30 fps video that repeats
+    one frame in six, else the container's.
+    """
+
+    def __init__(self, fps: float, repeats: np.ndarray, n_frames: int):
+        self.repeats = np.sort(np.asarray(repeats, dtype=np.int64))
+        frac = len(self.repeats) / max(1, n_frames)
+        self.source_fps = fps * (1 - frac) if frac > 0.05 else fps
+        for common in (24.0, 25.0, 30.0, 50.0, 60.0):
+            if abs(self.source_fps - common) < 0.5:
+                self.source_fps = common
+        self.uses_repeats = frac > 0.05
+
+    def seconds(self, f0: float, f: np.ndarray) -> np.ndarray:
+        """Time of frames `f` after frame `f0` (same span)."""
+        f = np.asarray(f, dtype=np.float64)
+        if not self.uses_repeats:
+            return (f - f0) / self.source_fps
+        rep = lambda x: np.searchsorted(self.repeats, np.floor(x), side="right")
+        return ((f - f0) - (rep(f) - rep(f0))) / self.source_fps
+
+
 def extract_clip(
     path: str | Path,
     out_path: str | Path,

@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-10-04. Picks up from `badminton-analysis-plan.md`.
+Last updated 2026-10-05 morning. Picks up from `badminton-analysis-plan.md`.
 
 ## Where things stand
 
@@ -10,8 +10,75 @@ Last updated 2026-10-04. Picks up from `badminton-analysis-plan.md`.
 | 2 — Segmentation | rebuilt 2026-10-01; hardened on 32 matches | rallies match real point totals (below); **hand-marked P/R not done** |
 | 3 — Court homography | yes | **all 32 pass** the length/width check; overlays **waiting on me to look** |
 | 4 — Players | yes (`src/players.py`) | **all 32 run**: identity right on all 32; movement check passes **31/32** (wc2023 fails: phase 2 takes breaks for rallies); overlays **waiting on me to watch** |
+| 5 — Hits, 3D, shots.csv | yes (`contacts`, `camera`, `flight`, `features`, `review`) | **all 32 run**, 30,266 shots; my own 20-shot pass 17/20 contacts clearly right — **your 20-shot check waiting** (`review/`) |
 
 Phases 1-4 are on `main` (phase 4 pushed 2026-10-04, `afa8327`).
+
+## Phase 5 — hits, 3D flights, shots.csv (built 2026-10-04 night, on my own)
+
+You approved the feature set (`docs/features.md`), building 3D now, and the
+recovery base; then went to sleep and told me to decide the rest. What I
+decided, and why — all of it is config or a few lines, tell me what to
+change:
+
+1. **Hit detection** (`src/contacts.py`): the shuttle's image track cut into
+   the fewest smooth pieces (optimal partition); a break within racket reach
+   of a wrist is a hit; hits alternate near/far (Viterbi). The **serve** is
+   the first hit with both players placed for it (service courts, still,
+   diagonal) *and* the shuttle seen in the server's hand just before —
+   without that second test the receiver tapping the shuttle back to the
+   server was taken for a serve. A flight ending at rest = the landing. I
+   hand-labelled 4 rallies (~35 hits, both frame rates): all found within
+   1-3 frames.
+2. **Camera** (`src/camera.py`): the homography can't give the focal length
+   for this camera angle (the two textbook constraints gave 461 vs 3043 px),
+   so the **net tape** (1.55 m) calibrates it; where several focal lengths
+   fit the tape, the one where near and far players' standing heights agree
+   wins (fixed Malaysia Masters 2020). All 32: camera 20-38 m behind the
+   court, 5-13 m up, standing nose height 1.24-1.52 m.
+3. **3D flight per shot** (`src/flight.py`): gravity + drag (terminal 6.8
+   m/s), fitted to the image track, pinned near the hitter at the contact and
+   near the receiver (or on the floor) at the end; "the hit happens at the
+   body" as a soft pull (a flat drive's depth is otherwise loose by ~1 m);
+   a shot the opponent returned must clear the net.
+4. **Only report what was seen**: speed off the racket only with 3+ track
+   points in the first 0.2 s (extrapolated, it swung 69-205 km/h with the
+   drag setting alone); net clearance only with points both sides of the
+   crossing. Fits worse than 20 px are left empty (counted).
+5. **The "30 fps" broadcasts are 25 fps** with every 6th frame repeated
+   (frame difference exactly 0). Counting a repeat as 1/30 s put fast shots
+   ~1 m out; times are now counted in unique frames. Short-flight fit error
+   at 30 fps dropped from 17.7 to 12.3 px (25 fps: 5.6).
+6. **A flight over 2.2 s holds a missed hit**: its flight features are empty.
+7. **Invariants** (plan: shuttle < 500 km/h, positions within court + 2 m):
+   breaking values blanked and counted; more than 15% of a match's shots
+   fails — the rule you chose for phase 4.
+
+### My own pass at the acceptance check (World Champs 2025, 20 random shots)
+
+Contact frame and hitter: **17 clearly right, 1 wrong, 2 I can't call** from
+stills (shot 4: a serve situation credited to the far player, flight 3.2 s —
+a missed hit; now blanked by rule 6). Landing / receiver point: 18
+plausible. **Net clearance** was −0.26 to −0.43 m on 4 slow net shots the
+opponent returned (8, 15, 16, 19); with rule 3's net constraint they now
+read −0.06 to −0.12 m — at the tape, within the error. Your check is the
+real one: `data/cache/kv_wc2025_f_shiyuqi/review/` (regenerated after the
+fixes), fill in `review.csv`.
+
+### All 32 matches
+
+30,266 shots (7.5-15.5 a rally; wc2023's 15.5 is its replay problem).
+Speed off the racket on 72% (median 85 km/h, 95th pct 272, 99th 393); net
+clearance on 67% (returned shots: median 0.29 m, 5th pct −0.09); 4,215
+flights not fitted (> 20 px), 1,134 over 2.2 s (missed hits), 224 values
+blanked by the invariants; no match over the 15% limit. Speed and the
+landing point are the least certain features (one camera; see rule 4); the
+2D ones (positions, timing, pose) are solid. A full run is ~4-6 min a
+match on CPU (5 in parallel: ~35 min for the 32).
+
+**Not done:** your 20-shot check (the plan's acceptance); a closer look at
+the ~4% missed hits (flights over 2.2 s) — the detector could look for a
+second break inside them.
 
 ## Phase 4 on all 32 matches (finished 2026-10-04 night)
 
