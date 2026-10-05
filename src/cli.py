@@ -12,7 +12,11 @@
     bda players-overlay --video data/raw/match.mp4 --match-id msia_open_f --start 30000 --seconds 30
     bda shots   --match-id msia_open_f                               # after `players`
     bda shots-review --video data/raw/match.mp4 --match-id msia_open_f --n 20
-    bda label                                                        # then open http://localhost:8765
+    bda label                                                        # then open http://127.0.0.1:8765
+    bda outcomes                                                     # rally winners, all matches
+    bda quality report                                               # phase 7: CV, acceptance, learning curve
+    bda quality train  --source hand
+    bda quality predict --source hand
 """
 
 from __future__ import annotations
@@ -249,6 +253,60 @@ def cmd_label(args) -> int:
     return 0
 
 
+def _all_matches(cfg) -> list[str]:
+    return sorted(p.parent.name for p in Path(cfg.paths.cache_dir).glob("*/shots.csv"))
+
+
+def cmd_outcomes(args) -> int:
+    """Rally winners and the score, read off the broadcast's score graphic (for phase 7)."""
+    from outcomes import OutcomeError, check_scores, find_outcomes, remap
+
+    cfg = load_config(args.config, args.overrides)
+    if args.check:
+        res = check_scores(cfg, Path(__file__).resolve().parents[1] / "docs" / "match_scores.csv")
+        if res.empty:
+            print("outcomes: no match with a known score has a rallies.csv yet (run `bda outcomes`)")
+            return 0
+        print(res.to_string(index=False))
+        print(f"outcomes: {res['decided'].sum()}/{res['rallies'].sum()} rallies decided, "
+              f"{res['points_off'].sum()} points off over {len(res)} matches with a known score")
+        return 0
+    failed = []
+    for m in args.match or _all_matches(cfg):
+        try:
+            if args.remap:
+                remap(cfg, m)
+            else:
+                find_outcomes(cfg, m, force=args.force)
+        except (OutcomeError, FileNotFoundError) as e:
+            print(f"outcomes: {e}")
+            failed.append(m)
+    if failed:
+        print(f"outcomes: no score graphic read in {len(failed)} match(es): {', '.join(failed)}")
+    return 1 if failed else 0
+
+
+def cmd_quality(args) -> int:
+    """Phase 7: the shot-quality model — report (CV, acceptance, learning curve), train, predict."""
+    import quality
+
+    cfg = load_config(args.config, args.overrides)
+    matches = args.match or None
+    if args.action == "report":
+        quality.report(cfg, matches=matches)
+    elif args.action == "train":
+        try:
+            meta = quality.train_final(cfg, source=args.source, matches=matches)
+        except quality.TooFewLabels as e:
+            print(f"quality: {e}")
+            return 1
+        print(f"quality: trained on {meta['n_train']} {args.source} labels")
+    else:
+        out = quality.predict(cfg, source=args.source, matches=matches)
+        print(f"quality: wrote quality.csv for {len(out)} match(es)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bda", description="badminton match analysis")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -347,6 +405,24 @@ def main(argv: list[str] | None = None) -> int:
     p_label.add_argument("--labeler", default="bank", help="who is labelling (stored with each label)")
     _add_common(p_label)
     p_label.set_defaults(func=cmd_label)
+
+    p_out = sub.add_parser("outcomes", help="rally winners and the score from the score graphic (needs `shots`)")
+    p_out.add_argument("--match", action="append", default=[], help="only this match (repeatable); default: all")
+    p_out.add_argument("--force", action="store_true", help="recompute even if cached")
+    p_out.add_argument("--remap", action="store_true", help="only redo the rows -> players match (no video)")
+    p_out.add_argument("--check", action="store_true", help="compare the games read with docs/match_scores.csv")
+    _add_common(p_out)
+    p_out.set_defaults(func=cmd_outcomes)
+
+    p_q = sub.add_parser("quality", help="phase 7: the shot-quality model (needs `outcomes`, labels)")
+    p_q.add_argument("action", choices=["report", "train", "predict"],
+                     help="report: CV by match, the acceptance check, the learning curve; "
+                          "train: fit and save the model; predict: write quality.csv per match")
+    p_q.add_argument("--source", choices=["hand", "baseline"], default="hand",
+                     help="labels: yours (default) or the free rally-outcome baseline")
+    p_q.add_argument("--match", action="append", default=[], help="only this match (repeatable); default: all")
+    _add_common(p_q)
+    p_q.set_defaults(func=cmd_quality)
 
     args = parser.parse_args(argv)
     return args.func(args)

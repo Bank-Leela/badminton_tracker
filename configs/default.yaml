@@ -6,6 +6,7 @@ paths:
   raw_dir: data/raw
   cache_dir: data/cache
   labels_dir: data/labels
+  models_dir: data/models
   tracknet_repo: external/TrackNetV3
   tracknet_ckpt: external/TrackNetV3/ckpts/TrackNet_best.pt
   inpaintnet_ckpt: external/TrackNetV3/ckpts/InpaintNet_best.pt
@@ -245,6 +246,11 @@ features:
   # the next event holds a hit the contact detection missed: the flight's
   # features are left empty.
   max_flight_s: 2.2
+  # The early_* features (phase 7's inputs) are measured from the shot's
+  # first early_frames frames after contact only, for every shot alike: what
+  # the labelling clip shows (labeler.after_frames). Whether and how the
+  # shot came back is never used.
+  early_frames: 10
 
 labeler:
   # A shot's clip: from before_s before the contact to after_frames after it
@@ -257,3 +263,143 @@ labeler:
   clip_width: 1280            # px; the shuttle is lost below ~1000
   jpeg_quality: 85
   cache_clips: 24             # rendered clips kept in memory
+
+outcomes:
+  # Who won each rally, read off the broadcast's score graphic: between two
+  # rallies only the winner's score changes. Per rally, the per-pixel median
+  # of a few frames from its start (the score shown is the one before it).
+  frames_per_rally: 7
+  sample_from_s: 0.3
+  sample_to_s: 6.0            # at most this far into the rally...
+  sample_to_frac: 0.7         # ...and not past this share of it (the score updates after the point)
+  agree_level: 25             # a frame agrees with the rally's median within this many grey levels
+  min_agree: 0.6              # share of the rally's frames that must agree for a pixel to count
+  change_level: 40            # grey-level change that counts as a pixel changing between rallies
+  # Where to look: [x0, y0, x1, y1] as fractions of the frame. All 32
+  # broadcasts put the score graphic top-left (2018-2026, every template).
+  search_box: [0.0, 0.0, 0.45, 0.15]
+  # Score digits change on some rally changes, not most (the crowd changes on most).
+  min_change_frac: 0.02
+  max_change_frac: 0.6
+  # ...and are ink or background, nothing between: over the rallies a digit
+  # pixel's grey sits within two_level_band x its range of its darkest or
+  # lightest (spectators shift by degrees). Tried with no such test, then
+  # requiring it in each of two_level_shares of the rallies (loose: a game
+  # column that is crowd until its game starts); the reading that decides
+  # the most rallies is kept.
+  min_contrast: 60
+  two_level_band: 0.2
+  two_level_shares: [0.9, 0.6]
+  # Cells: per rally change, a blob of changed pixels at least min_group_px
+  # big and at most max_cell_px each way (a digit, not a player or a
+  # redrawn graphic) paints its box on a heat map; a cell is a region
+  # painted at least min_cell_events times.
+  min_group_px: 12
+  max_cell_px: 60
+  min_cell_events: 3
+  cell_join_px: 3              # painted regions this close are one cell (fragments of one digit)
+  # The display: a complementary pair of cells (one above the other; one or
+  # the other changes between rallies, both on at most pair_overlap of
+  # those changes) covering at least min_pair_changes; further pairs on the
+  # same rows join with at most max_contradictions against the rest.
+  min_pair_changes: 10
+  pair_overlap: 0.25
+  # ...and dense: cut into stretches at gaps of more than pair_gap rallies,
+  # stretches of 3+ changes hold 85% of them and fill min_pair_density.
+  pair_gap: 5
+  min_pair_density: 0.7
+  max_contradictions: 1
+  # A rally whose name panel (the panel_band_px left of the digits) is off
+  # its usual look by more than absent_level grey levels on average shows
+  # no score (a banner, a blank, a cutaway): not read.
+  panel_band_px: 120
+  # Game ends: a reset counts when the leader's count plus unread points is
+  # within reset_slack of 21 (phase 2 misses a rally now and then); a reset
+  # within end_lookahead rallies says a bridged split or a short count was
+  # not the game's end.
+  reset_slack: 3
+  uncertain_slack: 7           # ...when the game's start wasn't seen (the interval at 11 must not pass)
+  end_lookahead: 6
+  absent_level: 30
+  # A cell changed when this share of its pixels did (and min_group_px of them),
+  # each by more than a cell change level: a digit flip is ink against its box
+  # (~150 levels); a box that changes shade when the serve changes hands (World
+  # Championships 2025) is not. Some templates' digits contrast less (WC 2023,
+  # 2026): each level is tried, with each pixel setting, and the best reading kept.
+  cell_change_levels: [90, 60]
+  cell_changed: 0.05
+  # Rows -> players, by vote: the winner serves next, and the server is the
+  # player nearer the centre line over the rally's first server_frames
+  # frames (by at least server_gap_m); clear in/out landings vote too
+  # (phase 5's own serves are unusable). Fewer than min_votes, or a
+  # majority under min_vote_share, leaves the match's rows unmatched.
+  server_frames: 5
+  server_gap_m: 0.3
+  min_votes: 15
+  min_vote_share: 0.75
+  clear_landing_m: 0.3        # |dist_from_lines| for a landing to count as clearly in or out
+  landing_net_gap_m: 2.0      # landings nearer the net than this may be on the tape: not used
+
+quality:
+  # Phase 7: LightGBM multiclass over the five outcome classes (plan).
+  model:
+    n_estimators: 500
+    learning_rate: 0.05
+    num_leaves: 15            # the default 31 overfits ~1000 rows
+    min_child_samples: 20
+    class_weight: balanced    # outright winners are rare
+    early_stopping_rounds: 50
+    num_threads: 4            # LightGBM's default (every core) spin-waits: ~10x slower in WSL
+  # Model inputs (shots.csv columns; hitter_near = hitter_side is near).
+  # Only what is known at contact, plus the early_* features measured from
+  # the first features.early_frames after it — the same for every shot,
+  # returned or not. Out: identifiers, the QA columns, the columns measured
+  # up to the reply or the floor (they give away whether the shot came
+  # back: grouped-CV AUC 0.99 for `ended`), hitter_recovery_time, and
+  # is_serve (phase 5 marks the far player's first hit, not the serve).
+  features: [shot_index, time_since_prev_contact, hitter_near,
+             hitter_depth, hitter_lateral, hitter_speed, contact_height, hitter_lean, stance_width,
+             opponent_depth, opponent_lateral, opponent_speed,
+             early_landing_depth, early_landing_lateral, early_dist_from_lines, early_flight_time,
+             early_shot_length, early_avg_speed, early_cross_court, early_net_clearance,
+             early_shuttle_speed, early_opponent_dist, early_opponent_toward]
+  # The early flight can't place a far player's shot in depth (it comes
+  # straight at the camera; median depth error 2.7 m, worse than a constant
+  # guess, docs/features.md): these are left unmeasured for far shots.
+  far_unmeasured: [early_landing_depth, early_dist_from_lines, early_shot_length, early_avg_speed,
+                   early_cross_court, early_opponent_dist, early_opponent_toward]
+  # Leak check in `bda quality report`: good shots do end rallies, so the
+  # inputs may predict `ended` somewhat (reported); but which inputs are
+  # missing must not (the old landing features were empty mostly when the
+  # rally ended): the grouped-CV AUC of `ended` from the missingness
+  # pattern alone must stay under max_missing_auc.
+  max_missing_auc: 0.65
+  # Every class keeps at least this probability (blended in), so a class
+  # absent from a training fold doesn't cost ~35 nats per test shot.
+  proba_floor: 0.001
+  # Expected quality = sum of p(class) x score (plan: winner +1 ... error -1).
+  class_scores: {1: 1.0, 2: 0.5, 3: 0.0, 4: -0.5, 5: -1.0}
+  # Derived verdict, in this order: risky (risk = p1 x (p4 + p5), at most
+  # 0.25) regardless of quality; good; bad; otherwise neutral.
+  verdict:
+    risky_min: 0.05
+    good_min: 0.3
+    bad_max: -0.3
+  # Game-state rules for the verdict layer: none until decided.
+  game_state_rules: []
+  # Free labels: the rally's result credited backwards from the last shot,
+  # x discount per shot (+ = the hitter's side won); |credit| >= cuts[0]
+  # gives 1 or 5, >= cuts[1] gives 2 or 4, smaller gives 3.
+  baseline:
+    discount: 0.5
+    cuts: [0.75, 0.3]
+    # The shuttle at rest on the last detected hitter's side means their
+    # opponent's final hit was missed (credit starts a shot further back) -
+    # only if it came to rest at least this long after that last hit (two
+    # flights); sooner, it was a net or short error.
+    min_missed_gap_s: 0.8
+  cv_folds: 8                 # grouped by match, never by shot
+  early_stopping_frac: 0.15   # of each training fold's matches, held out whole for early stopping
+  learning_curve: [200, 400, 600, 800, 1000]
+  learning_curve_repeats: 3
+  seed: 0

@@ -10,6 +10,12 @@ The plan's invariants are checked on every value: shuttle speed under
 one is a measurement failure (a bad flight fit, a misplaced foot): it is
 blanked and counted, and too many blanked in a match raises
 `FeatureCheckError` — the same rule as phase 4's movement check.
+
+The flight columns (`landing_*` ... `opponent_toward`) are measured up to the
+next event — the reply or the floor — so they say whether the shot came
+back. The `early_*` columns measure the same things from the shot's first
+`features.early_frames` frames only (what the labelling clip shows), the
+same way for every shot: phase 7's inputs (`early_flight_features`).
 """
 
 from __future__ import annotations
@@ -24,7 +30,7 @@ from camera import load_camera
 from config import Config, cache_dir
 from contacts import clean_track
 from court import COURT_LENGTH, DOUBLES_WIDTH, SINGLES_WIDTH, load_homographies, project
-from flight import Anchor, fit_flight
+from flight import Anchor, fit_early_flight, fit_flight
 from video import FrameClock, repeated_frames
 from players import KEYPOINTS, keypoints_array, load_players, to_court
 
@@ -44,6 +50,28 @@ SHOT_COLUMNS = [
     "opponent_id", "opponent_depth", "opponent_lateral", "opponent_dist", "opponent_speed", "opponent_toward",
     "fit_rms_px", "fit_n_obs", "contact_reach", "contact_gap",
 ]
+# Phase 7's inputs: the same shot measured from its early flight only — what
+# the labelling clip shows — flown on to the floor (`early_flight_features`).
+EARLY_COLUMNS = [
+    "early_landing_depth", "early_landing_lateral", "early_dist_from_lines", "early_flight_time",
+    "early_shot_length", "early_avg_speed", "early_cross_court", "early_net_clearance", "early_shuttle_speed",
+    "early_opponent_dist", "early_opponent_toward",
+    "early_fit_rms_px", "early_fit_n_obs",
+]
+SHOT_COLUMNS += EARLY_COLUMNS
+
+# Fewest track points in the early window for an early fit (seven unknowns;
+# fewer leave the direction loose). Would be `features.early_min_obs`.
+EARLY_MIN_OBS = 4
+# The early fit's track is cleaned (`contacts.clean_track`, which judges a
+# point by its neighbours) on the clip's own frames: from this many frames
+# before the contact to the window's last — never with a point after it.
+# Would be `features.early_clean_back_frames`.
+EARLY_CLEAN_BACK = 12
+# Share of a match's shots whose early-flight values may break an invariant
+# before it counts as systematic (on the 32 matches: 3.6-17%, the far
+# player's extrapolated landings mostly). Would be `features.max_early_blanked_frac`.
+EARLY_MAX_BLANKED_FRAC = 0.30
 
 
 class FeatureCheckError(AssertionError):
@@ -71,6 +99,140 @@ def dist_from_singles_lines(x: float, y: float) -> float:
         return inside
     dx, dy = max(0.0, abs(x) - HALF_SW), max(0.0, abs(y) - HALF_L)
     return -float(np.hypot(dx, dy))
+
+
+def dist_from_receiver_court(x: float, depth: float) -> float:
+    """`dist_from_singles_lines` for a landing at signed `depth` past the net (− = short, on the hitter's own half).
+
+    Past the net it is the same (the sidelines and the baseline); short of it,
+    minus the distance to the receiver's court.
+    """
+    if depth >= 0:
+        return dist_from_singles_lines(x, depth)
+    return -float(np.hypot(max(0.0, abs(x) - HALF_SW), depth))
+
+
+def early_window(frame: int, next_frame: int | None, early_frames: int, margin: int) -> int:
+    """Last frame of a shot's early window: `early_frames` after the contact, as the labelling clip shows.
+
+    In a fast exchange the clip stops `margin` frames short of the next event
+    (`labeler.clip_range`), so the window does too — the reply's own flight is
+    never fitted as this shot. Only the next event's frame matters, never
+    what it was (a reply or the landing).
+    """
+    last = frame + early_frames
+    if next_frame is not None:
+        last = min(last, max(frame, next_frame - margin - 1))
+    return last
+
+
+def clip_track(f0: int, last: int, tf: np.ndarray, tx: np.ndarray, ty: np.ndarray, top_px: float,
+               jump_px: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The shuttle track the labelling clip shows around a contact at `f0`, cleaned on its own.
+
+    `tf, tx, ty`: the match's visible shuttle points (frame-sorted). Only
+    frames `f0 - EARLY_CLEAN_BACK` .. `last` go in, so the one-frame
+    false-detection rule (`clean_track`) never looks past the window: the
+    track after it — the reply, or the shuttle on the floor — can't drop or
+    keep a point inside it.
+    """
+    i0, i1 = np.searchsorted(tf, f0 - EARLY_CLEAN_BACK), np.searchsorted(tf, last, side="right")
+    return clean_track(tf[i0:i1], tx[i0:i1], ty[i0:i1], top_px, jump_px)
+
+
+def start_pixel(f0: int, cf: np.ndarray, cx: np.ndarray, cy: np.ndarray) -> np.ndarray | None:
+    """The early fit's start pixel, from what the clip shows: the shuttle at the contact frame, else the frame
+    before; None when it is seen at neither (the fit then places the hit from the feet and the launch moment).
+
+    Not `contacts.csv`'s pixel: that is where the incoming and the outgoing
+    curves meet, and the outgoing one is fitted over the whole flight, up to
+    the reply or the landing.
+    """
+    for f in (f0, f0 - 1):
+        i = np.flatnonzero(cf == f)
+        if len(i):
+            return np.array([cx[i[0]], cy[i[0]]], float)
+    return None
+
+
+def early_flight_features(contact: dict, next_frame: int | None, tf: np.ndarray, tx: np.ndarray, ty: np.ndarray,
+                          clock: FrameClock, cam, hitter_xy, opp_xy, opp_v, receiver_side: str, cfg: Config,
+                          scale: float) -> tuple[dict, dict]:
+    """A shot's `early_*` columns, and which invariants they broke (`{"unfit", "speed", "time", "position"}` flags).
+
+    Everything comes from what the labelling clip shows — the contact's
+    frame and side, the hitter's feet, the shuttle track up to the window's
+    end (`tf, tx, ty`: the match's visible points, uncleaned; `clip_track`) —
+    and the receiver's position and velocity at the contact. The next event
+    enters only through its frame, to end the window in a fast exchange;
+    whether the shot was returned, and where or when, never does. Units and
+    frames as the namesakes: metres, seconds, m/s; the landing point in the
+    receiver's own frame — `early_landing_depth` signed, negative = it comes
+    down short of the net, on the hitter's side (`early_net_clearance` is
+    then NaN: it never gets there).
+
+    A fit breaking the speed invariant — launched at `max_shuttle_kmh` or
+    more, or stopped at the solver's cap (`flight.V_CAP_MPS`), or averaging
+    that much to its landing — or reaching the floor at or before the
+    contact frame is broken, not a fast shot: none of its values are kept
+    (only `early_fit_rms_px`, `early_fit_n_obs`). A landing outside the court
+    + `court_margin_m` blanks the landing's values only.
+    """
+    out, broke = {}, {"unfit": False, "speed": False, "time": False, "position": False}
+    if cam is None or hitter_xy is None:
+        return out, broke
+    cfg_f = cfg.features
+    f0 = int(contact["frame"])
+    last = early_window(f0, next_frame, int(cfg_f.early_frames), int(cfg.labeler.next_event_margin))
+    cf, cx, cy = clip_track(f0, last, tf, tx, ty, float(cfg.contacts.top_px) * scale,
+                            float(cfg.contacts.jump_px) * scale)
+    sel = (cf > f0) & (cf <= last)
+    if sel.sum() < EARLY_MIN_OBS:
+        return out, broke
+    ts, uv = clock.seconds(f0, cf[sel]), np.c_[cx[sel], cy[sel]]
+    fit = fit_early_flight(ts, uv, Anchor(0.0, start_pixel(f0, cf, cx, cy), hitter_xy), cam, cfg.flight,
+                           contact["side"])
+    out["early_fit_rms_px"], out["early_fit_n_obs"] = fit["rms_px"], fit["n_obs"]
+    if not np.isfinite(fit["rms_px"]) or fit["rms_px"] > float(cfg_f.max_fit_rms_px) * scale:
+        broke["unfit"] = True
+        return out, broke
+    max_mps = float(cfg_f.max_shuttle_kmh) / 3.6
+    if fit["capped"] or fit["speed_mps"] >= max_mps:
+        broke["speed"] = True
+        return out, broke
+    land, t_land = fit["land"], fit["t_land"]
+    landed = land is not None and np.isfinite(land).all() and t_land is not None
+    if landed:
+        d = land - fit["P0"][:2]
+        if t_land <= 0:  # on the floor at the contact frame, with the clip still to come: an underground fit
+            broke["time"] = True
+            return out, broke
+        if float(np.linalg.norm(d)) / t_land >= max_mps:
+            broke["speed"] = True
+            return out, broke
+    margin = float(cfg_f.court_margin_m)
+    if fit["early_obs"] >= int(cfg.flight.min_early_obs):
+        out["early_shuttle_speed"] = fit["speed_mps"]
+    if fit["net_z"] is not None and abs(fit["net_x"]) <= DOUBLES_WIDTH / 2 + margin:
+        out["early_net_clearance"] = fit["net_z"] - net_height(fit["net_x"])
+    if not landed:
+        return out, broke
+    if not (abs(land[0]) <= DOUBLES_WIDTH / 2 + margin and abs(land[1]) <= HALF_L + margin):
+        broke["position"] = True
+        return out, broke
+    depth = float(land[1]) if receiver_side == "far" else -float(land[1])
+    lateral = own_frame(land[0], land[1], receiver_side)[1]
+    out.update({"early_landing_depth": depth, "early_landing_lateral": lateral,
+                "early_dist_from_lines": dist_from_receiver_court(lateral, depth),
+                "early_flight_time": t_land, "early_shot_length": float(np.linalg.norm(d)),
+                "early_cross_court": float(np.degrees(np.arctan2(abs(d[0]), abs(d[1])))),
+                "early_avg_speed": float(np.linalg.norm(d)) / t_land})
+    if opp_xy is not None:
+        to_land = land - opp_xy
+        out["early_opponent_dist"] = float(np.linalg.norm(to_land))
+        if opp_v is not None and out["early_opponent_dist"] > 1e-6:
+            out["early_opponent_toward"] = float(opp_v @ to_land / out["early_opponent_dist"])
+    return out, broke
 
 
 class Track:
@@ -193,15 +355,17 @@ def shot_features(cfg: Config, match_id: str, force: bool = False) -> pd.DataFra
     kp = keypoints_array(players)
     track = Track(players, kp, homs, fps)
     shuttle = pd.read_csv(out_dir / "shuttle.csv")
-    shuttle = shuttle[shuttle["visible"] == 1]
-    sf, sx, sy = clean_track(shuttle["frame"].to_numpy(float), shuttle["x"].to_numpy(), shuttle["y"].to_numpy(),
-                             float(cfg.contacts.top_px) * scale, float(cfg.contacts.jump_px) * scale)
+    shuttle = shuttle[shuttle["visible"] == 1]  # in frame order, as phase 2 writes it
+    vf, vx, vy = shuttle["frame"].to_numpy(float), shuttle["x"].to_numpy(float), shuttle["y"].to_numpy(float)
+    sf, sx, sy = clean_track(vf, vx, vy, float(cfg.contacts.top_px) * scale, float(cfg.contacts.jump_px) * scale)
     clock = frame_clock(out_dir, contacts, fps)
     seg_of = players.drop_duplicates("frame").set_index("frame")["segment_id"]
     hits = contacts[contacts["kind"] != "landing"]
     bases = player_bases(hits, track)
     max_kmh, margin = float(cfg_f.max_shuttle_kmh), float(cfg_f.court_margin_m)
-    rows, blanked, unfit, long_flights = [], {"speed": 0, "position": 0}, 0, 0
+    rows, unfit, long_flights = [], 0, 0
+    blanked = {"speed": 0, "position": 0, "early_speed": 0, "early_time": 0, "early_position": 0}
+    early_unfit = 0
 
     def in_bounds(x, y):
         return abs(x) <= DOUBLES_WIDTH / 2 + margin and abs(y) <= HALF_L + margin
@@ -212,6 +376,7 @@ def shot_features(cfg: Config, match_id: str, force: bool = False) -> pd.DataFra
         for k, e in enumerate(rally_hits):
             side, other = e["side"], ("far" if e["side"] == "near" else "near")
             nxt = next((n for n in ev if n["frame"] > e["frame"]), None)
+            next_frame = None if nxt is None else int(nxt["frame"])  # for the early window only: when, not what
             r_h, r_o = track.at(side, e["frame"]), track.at(other, e["frame"])
             row = {c: np.nan for c in SHOT_COLUMNS}
             row.update({"match_id": match_id, "rally_id": int(rid), "shot_index": int(e["shot_index"]),
@@ -311,6 +476,17 @@ def shot_features(cfg: Config, match_id: str, force: bool = False) -> pd.DataFra
                             row["opponent_toward"] = float(v @ to_land / row["opponent_dist"])
                 else:
                     blanked["position"] += 1
+            # The early flight (phase 7's inputs): what the labelling clip
+            # shows, the same for every shot whether it came back or not.
+            early, broke = early_flight_features(e, next_frame, vf, vx, vy, clock,
+                                                 (cam["K"], *pose) if pose is not None else None, hitter_xy, opp_xy,
+                                                 track.velocity(other, e["frame"]) if opp_xy is not None else None,
+                                                 other, cfg, scale)
+            row.update(early)
+            early_unfit += broke["unfit"]
+            blanked["early_speed"] += broke["speed"]
+            blanked["early_time"] += broke["time"]
+            blanked["early_position"] += broke["position"]
             # Recovery: back near their base before their next hit (or the rally's end).
             nxt_own = next((h["frame"] for h in rally_hits[k + 1:] if h["side"] == side), rally["frame"].max() + int(fps))
             row["hitter_recovery_time"] = recovery_time(track, side, e["player_id"], e["frame"], nxt_own,
@@ -321,14 +497,29 @@ def shot_features(cfg: Config, match_id: str, force: bool = False) -> pd.DataFra
     df = pd.DataFrame(rows, columns=SHOT_COLUMNS)
     df.to_csv(out_file, index=False)
     n = len(df)
-    meta = {"shots": n, "blanked": blanked, "unfit": unfit, "long_flights": long_flights, "seconds": round(time.perf_counter() - started, 1),
+    meta = {"shots": n, "blanked": blanked, "unfit": unfit, "long_flights": long_flights, "early_unfit": early_unfit,
+            "with_early_landing": int(df["early_landing_depth"].notna().sum()),
+            "with_early_speed": int(df["early_shuttle_speed"].notna().sum()),
+            "with_early_net_clearance": int(df["early_net_clearance"].notna().sum()),
+            "seconds": round(time.perf_counter() - started, 1),
             "with_speed": int(df["shuttle_speed"].notna().sum()), "with_net_clearance": int(df["net_clearance"].notna().sum()),
             "bases": {str(k): [round(float(v), 2) for v in b] for k, b in bases.items()}}
     meta_file.write_text(json.dumps(meta, indent=1))
     print(f"shots: wrote {out_file} — {n} shots; speed on {meta['with_speed']}, net clearance on "
-          f"{meta['with_net_clearance']}; {unfit} flights not fitted, {long_flights} over {cfg_f.max_flight_s} s (a missed hit); blanked {blanked} in {meta['seconds']}s")
-    bad = sum(blanked.values())
+          f"{meta['with_net_clearance']}; {unfit} flights not fitted, {long_flights} over {cfg_f.max_flight_s} s (a missed hit); "
+          f"early flight: landing on {meta['with_early_landing']}, speed on {meta['with_early_speed']}, net clearance on "
+          f"{meta['with_early_net_clearance']}, {early_unfit} not fitted; blanked {blanked} in {meta['seconds']}s")
+    bad = blanked["speed"] + blanked["position"]
     if n and bad / n > float(cfg_f.max_blanked_frac):
         raise FeatureCheckError(f"{match_id}: {bad} of {n} shot values broke an invariant or failed to fit "
                                 f"({blanked}) — over {cfg_f.max_blanked_frac:.0%} is systematic")
+    # The early flight has its own rule: extrapolated from a third of a
+    # second, its landing leaves the court + 2 m on 2-13% of a match's shots
+    # (the far player's mostly, where one camera barely pins depth) and the
+    # fit breaks (500 km/h, the solver's cap) on 1-5% — a known limit, not a
+    # broken match — so the 15% above stays about the measured flights, as it was.
+    bad_early = blanked["early_speed"] + blanked["early_time"] + blanked["early_position"]
+    if n and bad_early / n > EARLY_MAX_BLANKED_FRAC:
+        raise FeatureCheckError(f"{match_id}: {bad_early} of {n} early-flight values broke an invariant "
+                                f"({blanked}) — over {EARLY_MAX_BLANKED_FRAC:.0%} is systematic")
     return df

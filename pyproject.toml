@@ -16,6 +16,10 @@ dependencies = [
     "ultralytics>=8.4",     # YOLO-pose + ByteTrack (phase 4). AGPL-3.0
     "lap>=0.5.12",          # ByteTrack's assignment solver
     "torchvision",          # install from the same CUDA index as torch
+    "scipy>=1.11",          # phase 7 metrics (via scikit-learn, Spearman)
+    "lightgbm>=4.3",        # the shot-quality model (phase 7); needs libgomp1 on Linux
+    "scikit-learn>=1.4",    # grouped CV and metrics (phase 7)
+    "matplotlib>=3.8",      # the learning curve (phase 7)
 ]
 
 [project.optional-dependencies]
@@ -35,7 +39,7 @@ build-backend = "setuptools.build_meta"
 # `import shuttle`, not `import src.shuttle`.
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["cli", "config", "video", "shuttle", "segment", "court", "players", "contacts", "camera", "flight", "features", "review", "labeler"]
+py-modules = ["cli", "config", "video", "shuttle", "segment", "court", "players", "contacts", "camera", "flight", "features", "review", "labeler", "outcomes", "quality"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

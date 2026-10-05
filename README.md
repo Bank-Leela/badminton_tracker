@@ -58,10 +58,14 @@ bda court-click --video data/raw/match.mp4 --match-id msia_open_f    # manual fa
 bda track   --video data/raw/match.mp4 --match-id msia_open_f --play-only   # whole match, play spans only
 bda players --video data/raw/match.mp4 --match-id msia_open_f        # needs `court`; ~20 min a match
 bda players-overlay --video data/raw/match.mp4 --match-id msia_open_f --start 30000 --seconds 30
+bda shots   --match-id msia_open_f                                   # needs `players`
+bda outcomes --match msia_open_f                                     # rally winners; needs `shots`
+bda label                                                            # phase 6
+bda quality report                                                   # phase 7
 ```
 
 A whole match, in order: `segment`, `court`, `track --play-only`, `segment`
-again (rallies come from the trajectory), `players`.
+again (rallies come from the trajectory), `players`, `shots`, `outcomes`.
 
 Outputs land in `data/cache/<match_id>/`:
 
@@ -91,7 +95,10 @@ Outputs land in `data/cache/<match_id>/`:
 | `repeats.npz` | repeated (duplicate) frames over the rallies, for `FrameClock` |
 | `shots.csv` | one row per hit: the features of `docs/features.md` — **the interface to everything downstream** |
 | `review/` | phase 5 acceptance sheets and `review.csv` |
+| `rallies.csv` | per rally: winning row of the score graphic and winning player id, how it was read, game, score before it (`outcomes.meta.json`, `score_graphic.png`: what was read, and where) |
+| `quality.csv` | phase 7, per shot: `p1`..`p5`, `expected_quality`, `risk`, `verdict`, and the score from the hitter's side |
 | `data/labels/shot_labels.csv` | phase 6: every label key press (latest per shot wins) — committed |
+| `data/models/` | phase 7: `quality_<source>.txt` (LightGBM) + `.json`, `quality_report.{txt,json}`, learning curves |
 
 Every stage caches and skips work when its output exists. `--force`
 recomputes. Exceptions to "exists means reuse": `segments.csv` is redone
@@ -146,6 +153,8 @@ src/flight.py    a shot's 3D flight (gravity + drag) fitted to its image track
 src/features.py  shots.csv: the per-shot features of docs/features.md
 src/review.py    acceptance sheets: random shots against the video
 src/labeler.py   the labelling server: queue, clips (JPEG frames), append-only label store
+src/outcomes.py  who won each rally, read off the broadcast's score graphic; the score
+src/quality.py   phase 7: LightGBM over the five outcome classes, CV by match, verdicts
 tools/labeler/   the keyboard-only labelling page
 ```
 
@@ -411,6 +420,69 @@ seconds` (time spent on the shot), `labeler, tool_version`.
 `bda label`, then label 50 shots without the mouse. The top bar shows the
 rate and, from the 50th label on, `last 50 in m:ss` — under 10:00 passes.
 
+## Phase 7 — the quality model
+
+```bash
+bda outcomes                     # who won each rally, all matches (~40 s a match, reads the video)
+bda outcomes --check             # games read vs the real final scores in docs/match_scores.csv
+bda quality report               # CV by match, the acceptance check, learning curves -> data/models/
+bda quality train   --source hand        # or --source baseline
+bda quality predict --source hand        # quality.csv per match
+```
+
+**Rally outcomes** (`src/outcomes.py`). The baseline labels need each
+rally's winner; phase 5 can't say (its serve detection only sees far-end
+serves, and only 70% of final landings are seen). The broadcast's score
+graphic can: between two rallies only the winner's score changes. No OCR
+and no per-broadcast setup — the score is found by what a score does: two
+digit cells one above the other, of which exactly one changes between
+rallies while their column is in play (all 32 broadcasts put the graphic
+top-left; 2018-19 and 2022-26 templates both read). A rally where the
+graphic is covered (a banner, a cutaway) is bridged by comparing the rallies
+either side; a game end seen only as a reset goes to whoever that point ends
+the game for; the score is replayed rally by rally. Which row is which
+player: the winner serves next, and at a rally's start the server stands
+nearer the centre line (86-100% of rallies); clear in/out landings vote too.
+
+**The model** (`src/quality.py`): the plan's LightGBM over the five classes
+(`lightgbm.train`, `num_class=5`, balanced class weights, outputs mapped back
+to the real class frequencies, a small probability floor).
+
+**Inputs** (`quality.features`): what is known at contact, plus the
+**early-flight features** — each shot's 3D flight fitted to only what the
+labelling clip shows (10 frames after contact) and extrapolated to the floor,
+the same for every shot whether it came back or not (`early_*`, phase 5;
+`docs/features.md`). The other after-contact columns are measured up to the
+reply or the floor and give away whether the shot came back (grouped-CV AUC
+0.99 for `ended`): the model refuses them (`LeakageError`). One camera can't
+place a far player's shot in depth, so those depth values are left out for
+far shots (`quality.far_unmeasured`). `bda quality report` checks that which
+inputs are missing doesn't predict `ended` (`quality.max_missing_auc`).
+
+**Evaluation** is grouped by match, never by shot: GroupKFold, with an
+early-stopping match held out inside each training fold. Primary score:
+multiclass log loss; also macro-F1, balanced accuracy, per-class
+precision/recall/support (watch class 1), the confusion matrix. From the
+distribution: expected quality (class scores in config), risk = p1 x (p4 + p5),
+and a verdict — risky, else good, else bad, else neutral (thresholds in config;
+game-state rules go in `quality.game_state_rules`, empty until decided).
+`quality.csv` carries the score from the hitter's side, with `score_exact`
+false where a rally earlier in that game wasn't read.
+
+**Free baseline labels**: each rally's result credited backwards from its last
+shot (discount 0.5): the last shot 1 (its hitter won) or 5 (lost), the one
+before 2 or 4, the rest 3. A rally whose winner wasn't read gives none. When
+the shuttle came to rest on the last detected hitter's own side (away from
+the net), the true final hit was missed: that rally's credit starts one shot
+further back.
+
+## Phase 7 acceptance check
+
+Label shots with `bda label` (the learning curve wants 200 / 400 / ... / 1000),
+then `bda quality report`: the hand-labelled model must beat the model trained
+on the baseline labels, on held-out matches (log loss); the report gives the
+learning curve and per-class precision / recall.
+
 ## Tests
 
 ```bash
@@ -428,7 +500,12 @@ network over a rendered match — two players who change ends, plus an umpire
 movement check jumps, sprints, swaps and flicker. Phase 5's cut synthetic
 shuttle tracks at known hits, play a whole rally (held serve, five hits, a
 landing) past stand-in players, recover a focal length from a rendered net,
-and fit 3D flights filmed by a known camera. Phase 6's render clips from the
+and fit 3D flights filmed by a known camera. Phase 7's read a synthetic
+score graphic (both template styles, over a shifting crowd, with a banner and
+a missing-graphic rally) and check every point and game boundary; match rows
+to players from serve positions and landings; and train and score the model
+on synthetic matches (grouped folds, absent classes, baseline labels, leakage
+guard, verdicts, the learning curve). Phase 6's render clips from the
 marker video and read the frame index back off every JPEG (start, contact,
 last frame, and the early stop before a quick reply), tear the label file
 mid-row and keep writing, and drive the server over HTTP: labels, refusals,

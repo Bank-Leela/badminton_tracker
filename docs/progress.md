@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-10-05 (phase 6 built overnight). Picks up from `badminton-analysis-plan.md`.
+Last updated 2026-10-05 (phase 7 built). Picks up from `badminton-analysis-plan.md`.
 
 ## Where things stand
 
@@ -12,8 +12,140 @@ Last updated 2026-10-05 (phase 6 built overnight). Picks up from `badminton-anal
 | 4 — Players | yes (`src/players.py`) | **all 32 run**: identity right on all 32; movement check passes **31/32** (wc2023 fails: phase 2 takes breaks for rallies); overlays **waiting on me to watch** |
 | 5 — Hits, 3D, shots.csv | yes (`contacts`, `camera`, `flight`, `features`, `review`) | **all 32 run**, 30,266 shots; my own 20-shot pass 17/20 contacts clearly right — **your 20-shot check waiting** (`review/`) |
 | 6 — Labelling tool | yes (`bda label`, `src/labeler.py`, `tools/labeler/`) | works end to end in the browser, keyboard only; reviewed, 9 problems fixed; **your 50-in-10-minutes check waiting** |
+| 7 — Quality model | yes (`bda outcomes`, `bda quality`, `src/outcomes.py`, `src/quality.py`; early-flight features in phase 5) | pipeline runs on the free baseline labels; two review rounds, all confirmed problems fixed; **needs your hand labels** (200+, ideally ~1000) |
 
-Phases 1-6 are on `main` (phase 6 pushed 2026-10-05, `b3a8ad6`).
+Phases 1-6 are on `main` (phase 6 pushed 2026-10-05, `b3a8ad6`). Phase 7 is
+committed on the local branch `phase7-quality`, not merged or pushed.
+
+## Phase 7 — the quality model (2026-10-05)
+
+### Your decisions
+
+- Install LightGBM + scikit-learn (and `libgomp1` in WSL, run as root).
+- Rally winners for the free baseline labels: **read off the score graphic**.
+- Baseline labels: **discount 0.5** — the last shot 1/5, the one before 2/4, the rest 3.
+- Game state: **report the score only**; verdict rules stay empty until you set them.
+- After-contact features: **early-flight only** (see the leak below).
+- `is_serve`: **dropped** as an input.
+
+### What I built and decided
+
+1. **Rally winners from the score graphic** (`src/outcomes.py`, `bda outcomes`).
+   Phase 5 can't say who won a rally: its serve detection flags the far
+   player's first contact in ~all rallies (a phase 5 bug — `is_serve` is
+   "first far contact", not "serve"), and only 70% of final landings are
+   seen. Between two rallies only the winner's score changes on the
+   broadcast graphic, so I read that — no OCR, no per-broadcast setup:
+   - all 32 broadcasts put the graphic top-left (checked by eye); the
+     search is limited to that box;
+   - digit cells = small patches that change again and again between
+     rallies; the display = two cells one above the other of which one or the
+     other changes at almost every rally while that column is in play;
+   - a rally where the graphic is covered (banner, blank, cutaway) is bridged
+     by comparing the rallies either side; game ends from resets (2018-19
+     graphics) or a new game column (2022-26), gated by the scoring rules;
+   - the score is replayed rally by rally, with `score_exact` false after any
+     unread rally in a game.
+2. **Which row is which player**: the winner serves next, and the server
+   stands nearer the centre line as the rally starts (86-100% per match,
+   measured against the graphic); clear in/out landings vote too. 31 of 32
+   matches matched (vote agreement 82-100%); Singapore 2019 has too few
+   clear votes (67% of 27) and gives no free labels.
+3. **The model** (`src/quality.py`): LightGBM multiclass via `lightgbm.train`
+   with `num_class=5` (a class missing from a fold can't scramble columns);
+   balanced class weights in training, outputs mapped back to the real class
+   frequencies (otherwise every shot reads "risky"); a probability floor
+   (0.001); evaluation grouped by match with an early-stopping match held out
+   inside each training fold; log loss primary, macro-F1, balanced accuracy,
+   per-class precision/recall/support and confusion.
+4. **Acceptance check** (`compare`): your hand model must beat, on held-out
+   matches, the baseline model (raw, and recalibrated to your labels' class
+   mix) **and** your labels' class prior — so it can't pass on calibration
+   alone (a reviewer showed the raw comparison passes with labels that carry
+   no signal).
+5. **Baseline labels**: when the shuttle rests on the last detected hitter's
+   own side (away from the net, ≥ 0.8 s after that hit), the true final hit
+   was missed: the credit starts a shot further back (161 of 2,917 rallies).
+
+### The leak, and early-flight features
+
+The first review found the after-contact features (landing, flight time,
+opponent distance, ...) were measured up to the *reply or the floor*, built
+differently in each case: from them alone a model told whether the shot
+ended the rally with grouped-CV AUC **0.99** — exactly what your labelling
+clip hides. Now (your choice) the model gets **early-flight features**:
+each shot's 3D flight fitted to only the 10 frames the clip shows
+(start pixel from the clip itself, a "strokes go towards the net" prior,
+the launch moment fitted), extrapolated to the floor, identically whether
+the shot came back or not (`early_*` columns, `docs/features.md`).
+- `ended` from the early features: AUC 0.79 (good shots do end rallies);
+  from which of them are missing: 0.58 (`bda quality report` checks < 0.65).
+- Accuracy against real floor landings (median): lateral 0.28 m; depth
+  1.19 m for the near player's shots, **2.42 m for the far player's** —
+  barely better than a constant guess (their shots come at the camera). So
+  the model leaves the far player's early depth values out
+  (`quality.far_unmeasured`); `shots.csv` keeps them.
+- The model refuses any column not on an allow-list (contact-time + early).
+
+### Reviews
+
+Two review rounds, each finding checked by independent verifiers:
+- round 1: 23 confirmed (~10 distinct): the leak; balanced weights skewing
+  every probability; a missing-class fold costing ~35 nats; baseline labels
+  wrong when the final hit was missed; the score replay merging or inventing
+  games; the landing vote reading the shuttle 2 frames early; stale caches;
+  weak tests. All fixed.
+- round 2 (on the fixes): 14 confirmed: game ends invented at 0-2 (Indonesia
+  Masters 2019 read as 11 games); real resets dropped when a rally was
+  missed; net-hanging shuttles flagged as missed hits; QA columns not
+  refused; far-shot blanking not saved with the model; the acceptance check
+  passing on calibration; early fits over 500 km/h keeping their landings;
+  the start pixel still depending on the later flight; the stroke direction
+  flipping at the net. All fixed, each with a test.
+
+### Results
+
+**Rally winners** (`bda outcomes`, all 32 matches read): against the real
+final scores of 20 matches (`bda outcomes --check`), **1,632 of 1,934 rallies
+decided (84%)**; the games read sit within 3-14 points of the real ones in
+11 matches (French Open 2024 and 2025: 4 and 3 off; China 2019, Japan 2026,
+Thailand 2026: 6-7). The rest lose part of a game where the graphic is hard
+to read (2018-19 graphics over the crowd, the World Championships template)
+— those rallies stay undecided rather than guessed. Every graphic template
+reads (2018-19 single column, 2022-26 column per game, World Championships
+with its shaded server box).
+
+**The model on the free baseline labels** (`bda quality report`, 8 folds by
+match, 24,923 labelled shots in 31 matches, 82% class 3):
+
+| | log loss | macro-F1 | class 1 precision / recall | class 5 precision / recall |
+|---|---|---|---|---|
+| class prior | 0.725 | 0.18 | - | - |
+| model (contact + early-flight inputs) | **0.641** | 0.23 | 0.73 / 0.06 | 0.74 / 0.06 |
+
+The inputs carry real signal about rally outcomes: when the model calls a
+shot an outright winner or an error it is right ~3 times in 4, though it
+rarely does. Leak check: which inputs are missing predicts `ended` at AUC
+0.62 (limit 0.65); all inputs 0.82. On free labels 1,000 shots barely beat
+the prior (0.719): they are mostly class 3 and say little each — your hand
+labels, spread over all five classes, should carry far more per shot; the
+learning curve on them will tell.
+
+**Tests**: 196 pass (phase 7: score reader on synthetic graphics of both
+template styles with deuce games, banners, blanks, splits and scripted
+replays; the model on synthetic matches; early-flight construction tests —
+the early columns are identical whether the shot came back or not).
+
+### Your part
+
+1. Label shots: `wsl -e bash -lc "cd /mnt/c/Users/Bank/badminton_tracker && .venv/bin/bda label"`
+   from PowerShell, then http://127.0.0.1:8765/ — 200 for a first report,
+   up to ~1000 if the learning curve is still rising.
+2. `bda quality report` — the acceptance check, the learning curve,
+   per-class precision/recall (in `data/models/quality_report.txt`).
+3. Then the verdict thresholds (`quality.verdict`) need setting against
+   real probabilities — with honest probabilities, risk = p1 x (p4 + p5)
+   will rarely reach the current 0.05.
 
 ## Phase 6 — the labelling tool (built overnight 2026-10-04 → 05, on my own)
 
