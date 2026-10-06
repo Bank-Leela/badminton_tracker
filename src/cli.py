@@ -243,7 +243,7 @@ def cmd_label(args) -> int:
     from labeler import serve
 
     cfg = load_config(args.config, args.overrides)
-    server = serve(cfg, args.match or None, args.order, args.seed, args.port, args.labeler)
+    server = serve(cfg, args.match or None, args.order or cfg.labeler.order, args.seed, args.port, args.labeler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -398,8 +398,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p_label = sub.add_parser("label", help="label shot outcomes in the browser, keyboard only (needs `shots`)")
     p_label.add_argument("--match", action="append", default=[], help="only this match (repeatable); default: all")
-    p_label.add_argument("--order", choices=["random", "rally"], default="random",
-                         help="random: one shuffle over all shots (default); rally: match by match, in play order")
+    p_label.add_argument("--order", choices=["random", "rally"], default=None,
+                         help="rally: match by match, rally by rally, in play order; random: one shuffle over "
+                              "all shots (default: labeler.order in the config)")
     p_label.add_argument("--seed", type=int, default=0, help="the shuffle; keep it to resume the same order")
     p_label.add_argument("--port", type=int, default=8765)
     p_label.add_argument("--labeler", default="bank", help="who is labelling (stored with each label)")

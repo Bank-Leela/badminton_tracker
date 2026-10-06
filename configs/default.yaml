@@ -253,6 +253,11 @@ features:
   early_frames: 10
 
 labeler:
+  # The order shots come up in: rally (match by match, rally by rally, both
+  # players' shots as they happened; your call 2026-10-05) or random (one
+  # shuffle over all 32 matches: an even sample whenever you stop). The
+  # model's checks need labels from several matches either way.
+  order: rally
   # A shot's clip: from before_s before the contact, through the receiver's
   # reply and its flight (show_reply), until next_event_margin frames before
   # the event after it (the hitter's next hit, or the landing); at most

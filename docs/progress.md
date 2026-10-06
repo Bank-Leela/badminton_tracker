@@ -31,6 +31,10 @@ Phases 1-7 are on `main` (phase 7 pushed 2026-10-05, `6ee1351`).
   rally stops just before it lands), not 10 frames after the hit as the
   plan had it; labels record `tool_version` 3. Both players boxed (receiver
   in cyan); Watch again / Slow buttons under the clip.
+- Labelling order: **in play order** — match by match, rally by rally
+  (`labeler.order: rally`; `--order random` for the shuffle). The model's
+  checks need labels from several matches, so the first report means
+  something after a few matches' worth.
 
 ### What I built and decided
 

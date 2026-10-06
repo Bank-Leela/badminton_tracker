@@ -378,8 +378,9 @@ landing point drawn on the court, and a top-down map; fill in
 ## Phase 6 — the labelling tool
 
 ```bash
-bda label                       # all matches, one random order; then open http://127.0.0.1:8765
-bda label --match kv_wc2025_f_shiyuqi --order rally   # one match, in play order
+bda label                       # match by match, rally by rally, in play order; then open http://127.0.0.1:8765
+bda label --order random        # one shuffle over all 32 matches instead (an even sample whenever you stop)
+bda label --match kv_wc2025_f_shiyuqi   # one match only
 ```
 
 A local page (`tools/labeler/index.html`, served by `src/labeler.py` on
