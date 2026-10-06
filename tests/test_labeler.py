@@ -126,10 +126,10 @@ def test_clips_show_the_reply_and_stop_before_the_next_event(match):
     assert [queue[f"m:{f}"]["next_kind"] for f in (30, 60, 95, 125, 160)] == ["hit", "hit", "landing", "hit", None]
     assert [queue[f"m:{f}"]["after_reply"] for f in (30, 60, 95, 125, 160)] == [66, 95, None, None, None]
     # Through the reply, until 2 frames before the event after it; a shot that ended the rally: until
-    # 2 frames before it lands; reply but nothing known after it: 1.5 s past the reply (here the span
-    # ends first); nothing known: 10 frames.
+    # 2 frames before it lands; reply but nothing known after it: 10 frames past the reply; nothing
+    # known: 10 frames.
     cases = [(30, 63, "reply", 60), (60, 92, "reply", 66), (95, 95, "landing", None),
-             (125, 199, "reply", 160), (160, 170, "cut", None)]
+             (125, 170, "reply", 160), (160, 170, "cut", None)]
     for f, last, stop, reply in cases:
         clip = render_clip(md, queue[f"m:{f}"], match["cfg"].labeler)
         meta = clip["meta"]
@@ -143,6 +143,17 @@ def test_clips_show_the_reply_and_stop_before_the_next_event(match):
     old = load_config(overrides=["labeler.show_reply=false", "labeler.until_next_event=false"]).labeler
     meta = render_clip(md, queue["m:30"], old)["meta"]
     assert meta["start_frame"] + meta["n"] - 1 == 40 and meta["stop"] == "cut"
+
+
+def test_a_next_hit_too_far_off_is_not_the_reply(match):
+    # 69 frames at 30 fps = 2.3 s: no shot flies that long, so hits were missed in between (fast net
+    # play): cut 10 frames after the contact, as when nothing is known.
+    pd.DataFrame([(0, 1, "serve", 30), (0, 2, "hit", 99), (1, 1, "serve", 125), (1, 2, "hit", 160)],
+                 columns=["rally_id", "shot_index", "kind", "frame"]).to_csv(match["out"] / "contacts.csv", index=False)
+    md = MatchData(match["cfg"], "m")
+    queue = {r["key"]: r for r in build_queue(match["cfg"], ["m"])}
+    meta = render_clip(md, queue["m:30"], match["cfg"].labeler)["meta"]
+    assert meta["start_frame"] + meta["n"] - 1 == 40 and meta["stop"] == "cut" and meta["reply_index"] is None
 
 
 def test_queue_order(match):

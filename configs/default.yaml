@@ -273,6 +273,11 @@ labeler:
   max_after_s: 4.0
   after_frames: 10
   next_event_margin: 2
+  # A next hit (or the event after the reply) further off than this is not
+  # the reply: no shot flies that long (features.max_flight_s), so hits were
+  # missed in between (fast net play) - treated as unknown (cut at
+  # after_frames).
+  max_gap_s: 2.2
   clip_width: 1280            # px; the shuttle is lost below ~1000
   jpeg_quality: 85
   cache_clips: 24             # rendered clips kept in memory

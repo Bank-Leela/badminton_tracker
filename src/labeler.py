@@ -261,17 +261,27 @@ def render_clip(md: MatchData, shot: dict, cfg_l: Config) -> dict:
     from video import iter_frames
 
     contact = int(shot["frame"])
-    nxt, kind = shot.get("next_event"), shot.get("next_kind")
+    nxt, kind, beyond = shot.get("next_event"), shot.get("next_kind"), shot.get("after_reply")
     margin = int(cfg_l.next_event_margin)
+    # No shot flies longer than `max_gap_s` (features.max_flight_s): a next
+    # event further off has hits the detection missed in between (fast net
+    # play) — it isn't this shot's reply, so it's treated as unknown.
+    gap = int(round(float(cfg_l.max_gap_s) * md.fps))
+    if nxt is not None and nxt - contact > gap:
+        nxt = kind = beyond = None
+    if beyond is not None and beyond - nxt > gap:
+        beyond = None
     after, until, reply = int(cfg_l.after_frames), nxt, None
     if nxt is not None and cfg_l.get("show_reply") and kind == "hit":
         # Through the receiver's reply and its flight: until just before the event
         # after it (the hitter's next hit, or the landing), at most `reply_max_s`
         # after the reply.
         reply = int(nxt)
-        until = shot.get("after_reply")
-        after = min(int(round(float(cfg_l.max_after_s) * md.fps)),
-                    reply - contact + int(round(float(cfg_l.reply_max_s) * md.fps)))
+        until = beyond
+        # Past the reply: its flight up to the event after it, or — that not known —
+        # `after_frames` more (a hit the detection missed must not come into view).
+        past = int(round(float(cfg_l.reply_max_s) * md.fps)) if beyond is not None else int(cfg_l.after_frames)
+        after = min(int(round(float(cfg_l.max_after_s) * md.fps)), reply - contact + past)
     elif nxt is not None and cfg_l.get("until_next_event"):
         # Until just before the receiver hits it (or it lands).
         after = int(round(float(cfg_l.max_after_s) * md.fps))
